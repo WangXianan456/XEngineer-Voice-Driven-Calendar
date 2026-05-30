@@ -28,6 +28,16 @@ export function useCalendarEvents() {
     return event;
   }
 
+  function restoreEvent(event: CalendarEvent) {
+    setEvents((current) => {
+      if (current.some((item) => item.id === event.id)) {
+        return current;
+      }
+
+      return [...current, event];
+    });
+  }
+
   function deleteEvent(eventId: string) {
     setEvents((current) => current.filter((event) => event.id !== eventId));
   }
@@ -59,6 +69,7 @@ export function useCalendarEvents() {
   return {
     events: sortedEvents,
     addEvent,
+    restoreEvent,
     deleteEvent,
     updateEvent,
     resetDemoEvents,

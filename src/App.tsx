@@ -30,6 +30,7 @@ type PendingAction =
   | {
       type: "create_event";
       event: CreateCalendarEventInput;
+      conflicts: CalendarEvent[];
       summary: string;
     }
   | {
@@ -43,6 +44,20 @@ type PendingAction =
       start: Date;
       end: Date;
       summary: string;
+    };
+
+type UndoAction =
+  | {
+      type: "create_event";
+      event: CalendarEvent;
+    }
+  | {
+      type: "delete_event";
+      event: CalendarEvent;
+    }
+  | {
+      type: "update_event";
+      event: CalendarEvent;
     };
 
 const examples = [
@@ -62,10 +77,12 @@ const initialMessages: AgentMessage[] = [
 ];
 
 export function App() {
-  const { events, addEvent, deleteEvent, updateEvent, resetDemoEvents, clearEvents } = useCalendarEvents();
+  const { events, addEvent, restoreEvent, deleteEvent, updateEvent, resetDemoEvents, clearEvents } =
+    useCalendarEvents();
   const [command, setCommand] = useState("");
   const [messages, setMessages] = useState<AgentMessage[]>(initialMessages);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const [lastUndoAction, setLastUndoAction] = useState<UndoAction | null>(null);
   const speech = useSpeechRecognition((text) => {
     setCommand(text);
     handleCommand(text);
@@ -115,15 +132,30 @@ export function App() {
       return;
     }
 
+    if (/撤销|恢复刚才|还原/.test(trimmed)) {
+      undoLastAction();
+      setCommand("");
+      return;
+    }
+
     const parsed = parseCalendarCommand(trimmed, events);
 
     if (parsed.intent === "create_event") {
+      const conflicts = findConflictingEvents(parsed.event.start, parsed.event.end, events);
       setPendingAction({
         type: "create_event",
         event: parsed.event,
-        summary: parsed.reply
+        conflicts,
+        summary:
+          conflicts.length > 0
+            ? `${parsed.reply} 但这个时间和「${conflicts[0].title}」冲突，是否仍然添加？`
+            : parsed.reply
       });
-      respond(parsed.reply);
+      respond(
+        conflicts.length > 0
+          ? `${parsed.reply} 但这个时间和「${conflicts[0].title}」冲突，是否仍然添加？`
+          : parsed.reply
+      );
     }
 
     if (parsed.intent === "list_events") {
@@ -178,15 +210,18 @@ export function App() {
 
     if (pendingAction.type === "create_event") {
       const event = addEvent(pendingAction.event);
+      setLastUndoAction({ type: "create_event", event });
       respond(`已添加「${event.title}」，${formatEventTime(event.start, event.end)}。`);
     }
 
     if (pendingAction.type === "delete_event") {
       deleteEvent(pendingAction.event.id);
+      setLastUndoAction({ type: "delete_event", event: pendingAction.event });
       respond(`已删除「${pendingAction.event.title}」。`);
     }
 
     if (pendingAction.type === "update_event") {
+      setLastUndoAction({ type: "update_event", event: pendingAction.event });
       updateEvent(pendingAction.event.id, {
         start: pendingAction.start.toISOString(),
         end: pendingAction.end.toISOString()
@@ -209,6 +244,40 @@ export function App() {
       summary: `确认删除「${event.title}」吗？`
     });
     respond(`删除「${event.title}」前需要确认。`);
+  }
+
+  function undoLastAction() {
+    if (!lastUndoAction) {
+      respond("当前没有可以撤销的操作。");
+      return;
+    }
+
+    if (lastUndoAction.type === "create_event") {
+      deleteEvent(lastUndoAction.event.id);
+      respond(`已撤销新增「${lastUndoAction.event.title}」。`);
+    }
+
+    if (lastUndoAction.type === "delete_event") {
+      restoreEvent(lastUndoAction.event);
+      respond(`已恢复「${lastUndoAction.event.title}」。`);
+    }
+
+    if (lastUndoAction.type === "update_event") {
+      updateEvent(lastUndoAction.event.id, lastUndoAction.event);
+      respond(`已撤销对「${lastUndoAction.event.title}」的修改。`);
+    }
+
+    setLastUndoAction(null);
+  }
+
+  function exportEvents() {
+    const blob = new Blob([JSON.stringify(events, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "voice-calendar-events.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
   }
 
   return (
@@ -274,7 +343,7 @@ export function App() {
               </span>
               <span>
                 <RotateCcw size={15} />
-                可撤销
+                {lastUndoAction ? "可撤销" : "无待撤销"}
               </span>
             </div>
           </section>
@@ -322,6 +391,9 @@ export function App() {
                     </button>
                     <button className="secondary-button" type="button" onClick={clearEvents}>
                       清空本地数据
+                    </button>
+                    <button className="secondary-button" type="button" onClick={exportEvents}>
+                      导出 JSON
                     </button>
                   </>
                 )}
@@ -437,7 +509,7 @@ function getPendingFields(pendingAction: PendingAction | null) {
   }
 
   if (pendingAction.type === "create_event") {
-    return [
+    const fields = [
       { label: "操作", value: "新增日程" },
       { label: "标题", value: pendingAction.event.title },
       {
@@ -446,6 +518,12 @@ function getPendingFields(pendingAction: PendingAction | null) {
       },
       { label: "提醒", value: formatReminder(pendingAction.event.reminderMinutes) }
     ];
+
+    if (pendingAction.conflicts.length > 0) {
+      fields.push({ label: "冲突", value: pendingAction.conflicts.map((event) => event.title).join("、") });
+    }
+
+    return fields;
   }
 
   if (pendingAction.type === "delete_event") {
@@ -465,6 +543,17 @@ function getPendingFields(pendingAction: PendingAction | null) {
     { label: "新时间", value: formatEventTime(pendingAction.start.toISOString(), pendingAction.end.toISOString()) },
     { label: "时长", value: `${duration} 分钟` }
   ];
+}
+
+function findConflictingEvents(start: Date, end: Date, events: CalendarEvent[]) {
+  const startTime = start.getTime();
+  const endTime = end.getTime();
+
+  return events.filter((event) => {
+    const eventStart = new Date(event.start).getTime();
+    const eventEnd = new Date(event.end).getTime();
+    return startTime < eventEnd && endTime > eventStart;
+  });
 }
 
 function formatListReply(events: CalendarEvent[], fallback: string) {
