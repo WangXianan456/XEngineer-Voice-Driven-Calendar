@@ -32,6 +32,22 @@ export function useCalendarEvents() {
     setEvents((current) => current.filter((event) => event.id !== eventId));
   }
 
+  function updateEvent(eventId: string, updates: Partial<CalendarEvent>) {
+    setEvents((current) =>
+      current.map((event) =>
+        event.id === eventId
+          ? {
+              ...event,
+              ...updates,
+              id: event.id,
+              createdAt: event.createdAt,
+              updatedAt: new Date().toISOString()
+            }
+          : event
+      )
+    );
+  }
+
   function resetDemoEvents() {
     setEvents(createDemoEvents());
   }
@@ -44,6 +60,7 @@ export function useCalendarEvents() {
     events: sortedEvents,
     addEvent,
     deleteEvent,
+    updateEvent,
     resetDemoEvents,
     clearEvents
   };
