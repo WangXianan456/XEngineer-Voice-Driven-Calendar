@@ -416,6 +416,15 @@ dd {
   color: #bd2b2b;
 }
 
+.empty-state {
+  border: 1px dashed #c9d3df;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #5b6b80;
+  line-height: 1.6;
+  padding: 18px;
+}
+
 .bottom-panel {
   margin: 20px auto 0;
   max-width: 1440px;

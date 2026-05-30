@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { addDays, set } from "date-fns";
 import {
   Bell,
   CalendarDays,
@@ -11,66 +13,14 @@ import {
   Trash2,
   Volume2
 } from "lucide-react";
-
-type CalendarEvent = {
-  id: string;
-  title: string;
-  time: string;
-  dateLabel: string;
-  reminder: string;
-  type: "meeting" | "focus" | "personal";
-};
+import { useCalendarEvents } from "./calendar/useCalendarEvents";
+import { formatDateLabel, formatEventTime, formatReminder } from "./utils/dateFormat";
 
 type AgentMessage = {
   id: string;
   role: "user" | "agent";
   text: string;
 };
-
-const demoEvents: CalendarEvent[] = [
-  {
-    id: "evt-1",
-    title: "产品评审会",
-    time: "明天 15:00 - 16:00",
-    dateLabel: "明天",
-    reminder: "提前 10 分钟",
-    type: "meeting"
-  },
-  {
-    id: "evt-2",
-    title: "项目复盘",
-    time: "今天 20:00 - 20:30",
-    dateLabel: "今天",
-    reminder: "准时提醒",
-    type: "focus"
-  },
-  {
-    id: "evt-3",
-    title: "设计团队同步",
-    time: "周一 10:00 - 11:00",
-    dateLabel: "本周",
-    reminder: "提前 30 分钟",
-    type: "meeting"
-  }
-];
-
-const messages: AgentMessage[] = [
-  {
-    id: "msg-1",
-    role: "agent",
-    text: "我可以帮你用语音添加、查看、修改和删除日程。第一版会在执行前展示确认。"
-  },
-  {
-    id: "msg-2",
-    role: "user",
-    text: "明天下午三点开产品评审会，提前十分钟提醒我。"
-  },
-  {
-    id: "msg-3",
-    role: "agent",
-    text: "已理解为：明天 15:00 到 16:00 的产品评审会，提前 10 分钟提醒。请确认。"
-  }
-];
 
 const examples = [
   "明天下午三点开产品评审会，提前十分钟提醒我",
@@ -80,7 +30,74 @@ const examples = [
   "明天下午我什么时候有空"
 ];
 
+const initialMessages: AgentMessage[] = [
+  {
+    id: "msg-1",
+    role: "agent",
+    text: "我可以帮你用语音添加、查看、修改和删除日程。当前阶段已接入本地日历数据层。"
+  }
+];
+
 export function App() {
+  const { events, addEvent, deleteEvent, resetDemoEvents, clearEvents } = useCalendarEvents();
+  const [command, setCommand] = useState("");
+  const [messages, setMessages] = useState<AgentMessage[]>(initialMessages);
+
+  const todayEvents = events.filter((event) => formatDateLabel(new Date(event.start)) === "今天");
+  const tomorrowEvents = events.filter((event) => formatDateLabel(new Date(event.start)) === "明天");
+  const reminderCount = events.filter((event) => event.reminderMinutes > 0).length;
+
+  function appendMessage(role: AgentMessage["role"], text: string) {
+    setMessages((current) => [
+      ...current,
+      {
+        id: `msg-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        role,
+        text
+      }
+    ]);
+  }
+
+  function handleCreateDemoCommand(text = command) {
+    const trimmed = text.trim();
+
+    if (!trimmed) {
+      appendMessage("agent", "请输入一条日程指令，或点击下方示例指令。");
+      return;
+    }
+
+    appendMessage("user", trimmed);
+
+    const tomorrow = addDays(new Date(), 1);
+    const event = addEvent({
+      title: "产品评审会",
+      start: set(tomorrow, { hours: 15, minutes: 0, seconds: 0, milliseconds: 0 }),
+      end: set(tomorrow, { hours: 16, minutes: 0, seconds: 0, milliseconds: 0 }),
+      reminderMinutes: 10,
+      sourceText: trimmed,
+      type: "meeting"
+    });
+
+    appendMessage(
+      "agent",
+      `已创建演示日程：「${event.title}」，${formatEventTime(event.start, event.end)}，${formatReminder(
+        event.reminderMinutes
+      )}。下一阶段会替换为真实中文指令解析和确认流程。`
+    );
+    setCommand("");
+  }
+
+  function handleDeleteEvent(eventId: string, title: string) {
+    const confirmed = window.confirm(`确认删除「${title}」吗？后续会替换为 Agent 二次确认。`);
+
+    if (!confirmed) {
+      return;
+    }
+
+    deleteEvent(eventId);
+    appendMessage("agent", `已删除「${title}」。`);
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -119,8 +136,15 @@ export function App() {
               <input
                 aria-label="文字指令兜底输入"
                 placeholder="也可以输入：明天下午三点开产品评审会..."
+                value={command}
+                onChange={(event) => setCommand(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    handleCreateDemoCommand();
+                  }
+                }}
               />
-              <button type="button" aria-label="发送指令">
+              <button type="button" aria-label="发送指令" onClick={() => handleCreateDemoCommand()}>
                 <Send size={18} />
               </button>
             </div>
@@ -140,7 +164,7 @@ export function App() {
           <section className="conversation" aria-label="Agent 对话">
             <div className="section-title">
               <h2>Agent 确认区</h2>
-              <span>pending action</span>
+              <span>data layer ready</span>
             </div>
             <div className="message-list">
               {messages.map((message) => (
@@ -153,32 +177,32 @@ export function App() {
             <article className="confirmation-card">
               <div className="confirmation-title">
                 <Check size={18} />
-                待确认操作
+                下一阶段确认流
               </div>
               <dl>
                 <div>
-                  <dt>操作</dt>
-                  <dd>新增日程</dd>
+                  <dt>当前能力</dt>
+                  <dd>本地事件 CRUD</dd>
                 </div>
                 <div>
-                  <dt>标题</dt>
-                  <dd>产品评审会</dd>
+                  <dt>持久化</dt>
+                  <dd>localStorage</dd>
                 </div>
                 <div>
-                  <dt>时间</dt>
-                  <dd>明天 15:00 - 16:00</dd>
+                  <dt>下一步</dt>
+                  <dd>指令解析</dd>
                 </div>
                 <div>
-                  <dt>提醒</dt>
-                  <dd>提前 10 分钟</dd>
+                  <dt>安全策略</dt>
+                  <dd>写入前确认</dd>
                 </div>
               </dl>
               <div className="confirmation-actions">
-                <button className="primary-button" type="button">
-                  确认
+                <button className="primary-button" type="button" onClick={resetDemoEvents}>
+                  填充演示数据
                 </button>
-                <button className="secondary-button" type="button">
-                  取消
+                <button className="secondary-button" type="button" onClick={clearEvents}>
+                  清空本地数据
                 </button>
               </div>
             </article>
@@ -200,50 +224,59 @@ export function App() {
           <div className="summary-grid">
             <article>
               <CalendarDays size={20} />
-              <strong>3</strong>
-              <span>本周日程</span>
+              <strong>{events.length}</strong>
+              <span>本地日程</span>
             </article>
             <article>
               <Bell size={20} />
-              <strong>2</strong>
+              <strong>{reminderCount}</strong>
               <span>待提醒</span>
             </article>
             <article>
               <Clock3 size={20} />
-              <strong>1</strong>
-              <span>明日会议</span>
+              <strong>{tomorrowEvents.length}</strong>
+              <span>明日安排</span>
             </article>
           </div>
 
           <div className="calendar-grid">
-            {["一", "二", "三", "四", "五", "六", "日"].map((day, index) => (
-              <article className={index === 5 ? "day-card active" : "day-card"} key={day}>
-                <span>周{day}</span>
-                <strong>{30 + index}</strong>
-              </article>
-            ))}
+            {Array.from({ length: 7 }, (_, index) => {
+              const date = addDays(new Date(), index);
+              return (
+                <article className={index === 0 ? "day-card active" : "day-card"} key={date.toISOString()}>
+                  <span>{formatDateLabel(date)}</span>
+                  <strong>{date.getDate()}</strong>
+                </article>
+              );
+            })}
           </div>
 
           <div className="event-list">
             <div className="section-title">
               <h2>事件列表</h2>
-              <span>localStorage ready</span>
+              <span>{todayEvents.length} 个今日安排</span>
             </div>
-            {demoEvents.map((event) => (
-              <article className={`event-item ${event.type}`} key={event.id}>
-                <div>
-                  <p>{event.dateLabel}</p>
-                  <h3>{event.title}</h3>
-                  <span>{event.time}</span>
-                </div>
-                <div className="event-meta">
-                  <span>{event.reminder}</span>
-                  <button type="button" aria-label={`删除 ${event.title}`}>
-                    <Trash2 size={16} />
-                  </button>
-                </div>
+            {events.length === 0 ? (
+              <article className="empty-state">
+                当前没有日程。可以点击「填充演示数据」，或输入任意文字创建演示日程。
               </article>
-            ))}
+            ) : (
+              events.map((event) => (
+                <article className={`event-item ${event.type}`} key={event.id}>
+                  <div>
+                    <p>{formatDateLabel(new Date(event.start))}</p>
+                    <h3>{event.title}</h3>
+                    <span>{formatEventTime(event.start, event.end)}</span>
+                  </div>
+                  <div className="event-meta">
+                    <span>{formatReminder(event.reminderMinutes)}</span>
+                    <button type="button" aria-label={`删除 ${event.title}`} onClick={() => handleDeleteEvent(event.id, event.title)}>
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                </article>
+              ))
+            )}
           </div>
         </section>
       </section>
@@ -255,7 +288,14 @@ export function App() {
         </div>
         <div className="example-list">
           {examples.map((example) => (
-            <button type="button" key={example}>
+            <button
+              type="button"
+              key={example}
+              onClick={() => {
+                setCommand(example);
+                handleCreateDemoCommand(example);
+              }}
+            >
               {example}
             </button>
           ))}
