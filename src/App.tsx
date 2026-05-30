@@ -16,6 +16,8 @@ import {
 import { parseCalendarCommand } from "./agent/commandParser";
 import type { CalendarEvent, CreateCalendarEventInput } from "./calendar/eventTypes";
 import { useCalendarEvents } from "./calendar/useCalendarEvents";
+import { speak } from "./speech/synthesis";
+import { useSpeechRecognition } from "./speech/useSpeechRecognition";
 import { formatDateLabel, formatEventTime, formatReminder } from "./utils/dateFormat";
 
 type AgentMessage = {
@@ -64,6 +66,10 @@ export function App() {
   const [command, setCommand] = useState("");
   const [messages, setMessages] = useState<AgentMessage[]>(initialMessages);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const speech = useSpeechRecognition((text) => {
+    setCommand(text);
+    handleCommand(text);
+  });
 
   const todayEvents = events.filter((event) => formatDateLabel(new Date(event.start)) === "今天");
   const tomorrowEvents = events.filter((event) => formatDateLabel(new Date(event.start)) === "明天");
@@ -81,11 +87,16 @@ export function App() {
     ]);
   }
 
+  function respond(text: string) {
+    appendMessage("agent", text);
+    speak(text);
+  }
+
   function handleCommand(text = command) {
     const trimmed = text.trim();
 
     if (!trimmed) {
-      appendMessage("agent", "请输入一条日程指令，或点击下方示例指令。");
+      respond("请输入一条日程指令，或点击下方示例指令。");
       return;
     }
 
@@ -99,7 +110,7 @@ export function App() {
 
     if (pendingAction && /取消|不用|算了/.test(trimmed)) {
       setPendingAction(null);
-      appendMessage("agent", "已取消当前待确认操作。");
+      respond("已取消当前待确认操作。");
       setCommand("");
       return;
     }
@@ -112,7 +123,7 @@ export function App() {
         event: parsed.event,
         summary: parsed.reply
       });
-      appendMessage("agent", parsed.reply);
+      respond(parsed.reply);
     }
 
     if (parsed.intent === "list_events") {
@@ -121,7 +132,7 @@ export function App() {
 
     if (parsed.intent === "delete_event") {
       if (parsed.candidates.length === 0) {
-        appendMessage("agent", parsed.reply);
+        respond(parsed.reply);
       } else {
         const event = parsed.candidates[0];
         setPendingAction({
@@ -129,13 +140,13 @@ export function App() {
           event,
           summary: `确认删除「${event.title}」吗？删除后下一阶段会支持撤销。`
         });
-        appendMessage("agent", `我找到了「${event.title}」，删除前需要你确认。`);
+        respond(`我找到了「${event.title}」，删除前需要你确认。`);
       }
     }
 
     if (parsed.intent === "update_event") {
       if (parsed.candidates.length === 0 || !parsed.start || !parsed.end) {
-        appendMessage("agent", parsed.reply);
+        respond(parsed.reply);
       } else {
         const event = parsed.candidates[0];
         setPendingAction({
@@ -148,12 +159,12 @@ export function App() {
             parsed.end.toISOString()
           )}。`
         });
-        appendMessage("agent", parsed.reply);
+        respond(parsed.reply);
       }
     }
 
     if (parsed.intent === "unknown") {
-      appendMessage("agent", parsed.reply);
+      respond(parsed.reply);
     }
 
     setCommand("");
@@ -161,18 +172,18 @@ export function App() {
 
   function confirmPendingAction() {
     if (!pendingAction) {
-      appendMessage("agent", "当前没有待确认操作。");
+      respond("当前没有待确认操作。");
       return;
     }
 
     if (pendingAction.type === "create_event") {
       const event = addEvent(pendingAction.event);
-      appendMessage("agent", `已添加「${event.title}」，${formatEventTime(event.start, event.end)}。`);
+      respond(`已添加「${event.title}」，${formatEventTime(event.start, event.end)}。`);
     }
 
     if (pendingAction.type === "delete_event") {
       deleteEvent(pendingAction.event.id);
-      appendMessage("agent", `已删除「${pendingAction.event.title}」。`);
+      respond(`已删除「${pendingAction.event.title}」。`);
     }
 
     if (pendingAction.type === "update_event") {
@@ -180,7 +191,7 @@ export function App() {
         start: pendingAction.start.toISOString(),
         end: pendingAction.end.toISOString()
       });
-      appendMessage("agent", `已修改「${pendingAction.event.title}」的时间。`);
+      respond(`已修改「${pendingAction.event.title}」的时间。`);
     }
 
     setPendingAction(null);
@@ -188,7 +199,7 @@ export function App() {
 
   function cancelPendingAction() {
     setPendingAction(null);
-    appendMessage("agent", "已取消当前待确认操作。");
+    respond("已取消当前待确认操作。");
   }
 
   function requestDeleteEvent(event: CalendarEvent) {
@@ -197,7 +208,7 @@ export function App() {
       event,
       summary: `确认删除「${event.title}」吗？`
     });
-    appendMessage("agent", `删除「${event.title}」前需要确认。`);
+    respond(`删除「${event.title}」前需要确认。`);
   }
 
   return (
@@ -210,7 +221,7 @@ export function App() {
         <div className="topbar-actions" aria-label="全局状态">
           <span className="status-pill">
             <Mic size={16} />
-            文字 Agent 已就绪
+            {speech.statusLabel}
           </span>
           <button className="icon-button" type="button" aria-label="打开演示控制台">
             <Settings size={18} />
@@ -226,12 +237,17 @@ export function App() {
                 <p className="section-kicker">语音主入口</p>
                 <h2>说一句话管理日程</h2>
               </div>
-              <span className="listening-dot">待接语音</span>
+              <span className="listening-dot">{speech.statusLabel}</span>
             </div>
 
-            <button className="mic-button" type="button">
+            <button
+              className="mic-button"
+              type="button"
+              disabled={!speech.isSupported}
+              onClick={speech.status === "listening" ? speech.stopListening : speech.startListening}
+            >
               <Mic size={34} />
-              <span>语音入口预留</span>
+              <span>{speech.isSupported ? "点击说话" : "请使用 Chrome 或文字输入"}</span>
             </button>
 
             <div className="command-input">
