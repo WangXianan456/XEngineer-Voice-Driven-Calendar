@@ -67,4 +67,31 @@ describe("parseCalendarCommand", () => {
     expect(result.candidates).toHaveLength(1);
     expect(result.candidates[0].title).toBe("产品评审会");
   });
+
+  it("finds free time slots around existing events", () => {
+    const tomorrow = addDays(baseDate, 1);
+    const events = [
+      createCalendarEvent({
+        title: "产品评审会",
+        start: set(tomorrow, { hours: 15, minutes: 0, seconds: 0, milliseconds: 0 }),
+        end: set(tomorrow, { hours: 16, minutes: 0, seconds: 0, milliseconds: 0 }),
+        reminderMinutes: 10,
+        sourceText: "明天下午三点开产品评审会"
+      })
+    ];
+
+    const result = parseCalendarCommand("明天下午我什么时候有空", events, baseDate);
+
+    expect(result.intent).toBe("find_free_time");
+
+    if (result.intent !== "find_free_time") {
+      throw new Error("expected find_free_time");
+    }
+
+    expect(result.slots).toHaveLength(2);
+    expect(result.slots[0].start.getHours()).toBe(13);
+    expect(result.slots[0].end.getHours()).toBe(15);
+    expect(result.slots[1].start.getHours()).toBe(16);
+    expect(result.slots[1].end.getHours()).toBe(18);
+  });
 });

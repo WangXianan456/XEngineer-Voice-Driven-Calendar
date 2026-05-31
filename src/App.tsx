@@ -5,11 +5,12 @@ import {
   CalendarDays,
   Check,
   Clock3,
+  Database,
+  Download,
   Mic,
-  PanelRightOpen,
   RotateCcw,
   Send,
-  Settings,
+  ShieldCheck,
   Trash2,
   Volume2
 } from "lucide-react";
@@ -64,6 +65,7 @@ const examples = [
   "明天下午三点开产品评审会，提前十分钟提醒我",
   "我明天有什么安排",
   "把产品评审会改到下午四点",
+  "明天下午我什么时候有空",
   "删除明天的产品评审会",
   "今天晚上八点提醒我复盘项目"
 ];
@@ -72,7 +74,7 @@ const initialMessages: AgentMessage[] = [
   {
     id: "msg-1",
     role: "agent",
-    text: "我可以帮你用文字或语音管理日程。当前已支持文字指令解析，写入类操作会先确认。"
+    text: "说出或输入一条日程指令，我会先展示理解结果，再等待你确认写入。"
   }
 ];
 
@@ -162,6 +164,10 @@ export function App() {
       appendMessage("agent", formatListReply(parsed.events, parsed.reply));
     }
 
+    if (parsed.intent === "find_free_time") {
+      respond(formatFreeTimeReply(parsed.slots, parsed.reply));
+    }
+
     if (parsed.intent === "delete_event") {
       if (parsed.candidates.length === 0) {
         respond(parsed.reply);
@@ -170,7 +176,7 @@ export function App() {
         setPendingAction({
           type: "delete_event",
           event,
-          summary: `确认删除「${event.title}」吗？删除后下一阶段会支持撤销。`
+          summary: `确认删除「${event.title}」吗？删除后可以撤销最近一次操作。`
         });
         respond(`我找到了「${event.title}」，删除前需要你确认。`);
       }
@@ -292,9 +298,10 @@ export function App() {
             <Mic size={16} />
             {speech.statusLabel}
           </span>
-          <button className="icon-button" type="button" aria-label="打开演示控制台">
-            <Settings size={18} />
-          </button>
+          <span className="status-pill muted">
+            <ShieldCheck size={16} />
+            本地确认
+          </span>
         </div>
       </header>
 
@@ -344,6 +351,10 @@ export function App() {
               <span>
                 <RotateCcw size={15} />
                 {lastUndoAction ? "可撤销" : "无待撤销"}
+              </span>
+              <span>
+                <Database size={15} />
+                本地存储
               </span>
             </div>
           </section>
@@ -408,9 +419,9 @@ export function App() {
               <p className="section-kicker">Calendar Workspace</p>
               <h2>今日与本周安排</h2>
             </div>
-            <button className="secondary-button" type="button">
-              <PanelRightOpen size={17} />
-              演示控制台
+            <button className="secondary-button" type="button" onClick={exportEvents}>
+              <Download size={17} />
+              导出 JSON
             </button>
           </div>
 
@@ -504,7 +515,7 @@ function getPendingFields(pendingAction: PendingAction | null) {
       { label: "当前能力", value: "文字指令 Agent" },
       { label: "持久化", value: "localStorage" },
       { label: "安全策略", value: "写入前确认" },
-      { label: "下一步", value: "语音识别" }
+      { label: "验收状态", value: "阶段 6 测试与部署准备" }
     ];
   }
 
@@ -563,5 +574,18 @@ function formatListReply(events: CalendarEvent[], fallback: string) {
 
   return events
     .map((event, index) => `${index + 1}. ${event.title}，${formatEventTime(event.start, event.end)}`)
+    .join("\n");
+}
+
+function formatFreeTimeReply(slots: { start: Date; end: Date }[], fallback: string) {
+  if (slots.length === 0) {
+    return fallback;
+  }
+
+  return slots
+    .map(
+      (slot, index) =>
+        `${index + 1}. ${formatEventTime(slot.start.toISOString(), slot.end.toISOString()).replace("今天 ", "")}`
+    )
     .join("\n");
 }

@@ -1,6 +1,11 @@
 import { addDays, addHours, set } from "date-fns";
 import type { CalendarEvent, CreateCalendarEventInput } from "../calendar/eventTypes";
 
+export type FreeTimeSlot = {
+  start: Date;
+  end: Date;
+};
+
 export type ParsedCommand =
   | {
       intent: "create_event";
@@ -22,6 +27,11 @@ export type ParsedCommand =
       candidates: CalendarEvent[];
       start?: Date;
       end?: Date;
+      reply: string;
+    }
+  | {
+      intent: "find_free_time";
+      slots: FreeTimeSlot[];
       reply: string;
     }
   | {
@@ -64,7 +74,7 @@ export function parseCalendarCommand(
   }
 
   if (isDeleteIntent(normalized)) {
-    const candidates = findMatchingEvents(normalized, events);
+    const candidates = findMatchingEvents(normalized, events, now);
     return {
       intent: "delete_event",
       candidates,
@@ -77,7 +87,7 @@ export function parseCalendarCommand(
 
   if (isUpdateIntent(normalized)) {
     const parsedTime = parseDateTime(normalized, now);
-    const candidates = findMatchingEvents(normalized, events);
+    const candidates = findMatchingEvents(normalized, events, now);
 
     return {
       intent: "update_event",
@@ -90,6 +100,18 @@ export function parseCalendarCommand(
           : parsedTime
             ? `我会把「${candidates[0].title}」改到 ${formatCommandTime(parsedTime.start)}，请确认。`
             : "我找到了日程，但还不能确定新的时间，请补充时间。"
+    };
+  }
+
+  if (isFreeTimeIntent(normalized)) {
+    const slots = findFreeTimeSlots(normalized, events, now);
+    return {
+      intent: "find_free_time",
+      slots,
+      reply:
+        slots.length === 0
+          ? "这个时间范围里暂时没有 30 分钟以上的空闲时间。"
+          : `我找到了 ${slots.length} 个空闲时间：${slots.map(formatTimeSlot).join("、")}。`
     };
   }
 
@@ -154,6 +176,10 @@ function isDeleteIntent(text: string) {
 
 function isUpdateIntent(text: string) {
   return /改到|修改|推迟到|提前到/.test(text);
+}
+
+function isFreeTimeIntent(text: string) {
+  return /空闲|有空|什么时候有空|有没有空/.test(text);
 }
 
 function parseDateTime(text: string, now: Date): ParsedDateTime | null {
@@ -257,14 +283,76 @@ function extractReminderMinutes(text: string) {
   return match[2] === "小时" ? value * 60 : value;
 }
 
-function findMatchingEvents(text: string, events: CalendarEvent[]) {
-  const scoped = filterEventsByText(text, events, new Date());
+function findMatchingEvents(text: string, events: CalendarEvent[], now: Date) {
+  const scoped = filterEventsByText(text, events, now);
   const keyword = extractEventKeyword(text);
   const titleMatched = scoped.filter(
     (event) => text.includes(event.title) || event.title.includes(keyword) || keyword.includes(event.title)
   );
 
   return titleMatched.length > 0 ? titleMatched : scoped;
+}
+
+function findFreeTimeSlots(text: string, events: CalendarEvent[], now: Date) {
+  const date = parseDate(text, now);
+  const window = getFreeTimeWindow(text, date);
+  const busyEvents = events
+    .map((event) => ({
+      start: new Date(event.start),
+      end: new Date(event.end)
+    }))
+    .filter((event) => event.start < window.end && event.end > window.start)
+    .sort((first, second) => first.start.getTime() - second.start.getTime());
+
+  const slots: FreeTimeSlot[] = [];
+  let cursor = window.start;
+
+  for (const event of busyEvents) {
+    const busyStart = event.start > window.start ? event.start : window.start;
+    const busyEnd = event.end < window.end ? event.end : window.end;
+
+    if (busyStart.getTime() - cursor.getTime() >= 30 * 60 * 1000) {
+      slots.push({ start: cursor, end: busyStart });
+    }
+
+    if (busyEnd > cursor) {
+      cursor = busyEnd;
+    }
+  }
+
+  if (window.end.getTime() - cursor.getTime() >= 30 * 60 * 1000) {
+    slots.push({ start: cursor, end: window.end });
+  }
+
+  return slots;
+}
+
+function getFreeTimeWindow(text: string, date: Date) {
+  if (/上午|早上/.test(text)) {
+    return {
+      start: set(date, { hours: 9, minutes: 0, seconds: 0, milliseconds: 0 }),
+      end: set(date, { hours: 12, minutes: 0, seconds: 0, milliseconds: 0 })
+    };
+  }
+
+  if (/下午/.test(text)) {
+    return {
+      start: set(date, { hours: 13, minutes: 0, seconds: 0, milliseconds: 0 }),
+      end: set(date, { hours: 18, minutes: 0, seconds: 0, milliseconds: 0 })
+    };
+  }
+
+  if (/晚上|傍晚/.test(text)) {
+    return {
+      start: set(date, { hours: 18, minutes: 0, seconds: 0, milliseconds: 0 }),
+      end: set(date, { hours: 22, minutes: 0, seconds: 0, milliseconds: 0 })
+    };
+  }
+
+  return {
+    start: set(date, { hours: 9, minutes: 0, seconds: 0, milliseconds: 0 }),
+    end: set(date, { hours: 18, minutes: 0, seconds: 0, milliseconds: 0 })
+  };
 }
 
 function extractEventKeyword(text: string) {
@@ -338,6 +426,13 @@ function formatCommandTime(date: Date) {
   return `${date.getMonth() + 1} 月 ${date.getDate()} 日 ${String(date.getHours()).padStart(2, "0")}:${String(
     date.getMinutes()
   ).padStart(2, "0")}`;
+}
+
+function formatTimeSlot(slot: FreeTimeSlot) {
+  return `${String(slot.start.getHours()).padStart(2, "0")}:${String(slot.start.getMinutes()).padStart(
+    2,
+    "0"
+  )}-${String(slot.end.getHours()).padStart(2, "0")}:${String(slot.end.getMinutes()).padStart(2, "0")}`;
 }
 
 function formatReminderText(minutes: number) {

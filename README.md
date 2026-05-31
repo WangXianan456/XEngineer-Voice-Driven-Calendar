@@ -77,11 +77,36 @@ npm run build
 npm run test
 ```
 
+预览生产包：
+
+```bash
+npm run build
+npm run preview
+```
+
 开发服务默认运行在：
 
 ```text
 http://127.0.0.1:5173
 ```
+
+生产预览默认运行在：
+
+```text
+http://127.0.0.1:4173
+```
+
+## 部署
+
+本项目是纯前端静态应用，可以部署到 Vercel、Netlify、Cloudflare Pages 或任意静态文件服务器。
+
+推荐配置：
+
+- Build command：`npm run build`
+- Output directory：`dist`
+- Node.js：建议使用 20 LTS
+
+如果使用静态服务器，执行 `npm run build` 后发布 `dist/` 目录即可。
 
 ## 第一版功能范围
 
@@ -162,3 +187,6 @@ P2 后续：
 - 已实现文字指令 Agent 初版。
 - 已接入浏览器语音识别和语音播报。
 - 已实现写操作确认、冲突提示、最近一次操作撤销和 JSON 导出。
+- 已实现空闲时间查询。
+- `npm run test -- --run` 通过，1 个测试文件、4 个测试用例。
+- `npm run build` 通过。
