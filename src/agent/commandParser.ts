@@ -177,7 +177,7 @@ function isCreateIntent(text: string) {
 }
 
 function isListIntent(text: string) {
-  return /查看|看看|有什么|日程|安排/.test(text) && !/添加|创建|删除|删掉|取消|改到|修改/.test(text);
+  return /查看|看看|有什么|日程/.test(text) && !/添加|创建|删除|删掉|取消|改到|修改/.test(text);
 }
 
 function isDeleteIntent(text: string) {
