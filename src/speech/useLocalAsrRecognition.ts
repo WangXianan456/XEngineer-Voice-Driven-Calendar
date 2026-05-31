@@ -14,6 +14,7 @@ const apiBaseUrl = env?.VITE_API_BASE_URL?.trim();
 export function useLocalAsrRecognition(onResult: (text: string) => void) {
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const autoStopTimerRef = useRef<number | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
   const [status, setStatus] = useState<LocalAsrStatus>(() => getInitialStatus());
 
@@ -68,9 +69,13 @@ export function useLocalAsrRecognition(onResult: (text: string) => void) {
         void transcribeRecording();
       };
 
-      recorder.start();
+      recorder.start(250);
+      autoStopTimerRef.current = window.setTimeout(() => {
+        stopListening();
+      }, 8000);
       setStatus("listening");
-    } catch {
+    } catch (error) {
+      console.error("Failed to start local ASR recording", error);
       cleanupStream();
       setStatus("error");
     }
@@ -79,6 +84,7 @@ export function useLocalAsrRecognition(onResult: (text: string) => void) {
   function stopListening() {
     if (recorderRef.current?.state === "recording") {
       setStatus("transcribing");
+      recorderRef.current.requestData();
       recorderRef.current.stop();
       return;
     }
@@ -93,6 +99,7 @@ export function useLocalAsrRecognition(onResult: (text: string) => void) {
     cleanupStream();
 
     if (!blob.size) {
+      console.error("Local ASR recording produced an empty audio blob");
       setStatus("error");
       return;
     }
@@ -107,7 +114,8 @@ export function useLocalAsrRecognition(onResult: (text: string) => void) {
       });
 
       if (!response.ok) {
-        throw new Error(`ASR request failed: ${response.status}`);
+        const detail = await response.text();
+        throw new Error(`ASR request failed: ${response.status} ${detail}`);
       }
 
       const result = (await response.json()) as AsrResponse;
@@ -119,7 +127,8 @@ export function useLocalAsrRecognition(onResult: (text: string) => void) {
 
       onResult(text);
       setStatus("idle");
-    } catch {
+    } catch (error) {
+      console.error("Local ASR transcription failed", error);
       setStatus("error");
     } finally {
       chunksRef.current = [];
@@ -127,6 +136,10 @@ export function useLocalAsrRecognition(onResult: (text: string) => void) {
   }
 
   function cleanupStream() {
+    if (autoStopTimerRef.current !== null) {
+      window.clearTimeout(autoStopTimerRef.current);
+      autoStopTimerRef.current = null;
+    }
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     recorderRef.current = null;

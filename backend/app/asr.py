@@ -21,7 +21,16 @@ def _load_model():
             detail="faster-whisper is not installed. Run: pip install -r backend/requirements.txt",
         ) from exc
 
-    return WhisperModel(settings.asr_model, device=settings.asr_device, compute_type=settings.asr_compute_type)
+    try:
+        return WhisperModel(settings.asr_model, device=settings.asr_device, compute_type=settings.asr_compute_type)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "ASR model is not ready. Check model download/network and ASR_DEVICE/ASR_COMPUTE_TYPE. "
+                f"Original error: {exc}"
+            ),
+        ) from exc
 
 
 async def transcribe_audio(file: UploadFile, language: str | None = "zh") -> AsrResponse:
@@ -45,13 +54,16 @@ async def transcribe_audio(file: UploadFile, language: str | None = "zh") -> Asr
 
         try:
             model = _load_model()
-            segments, info = model.transcribe(
-                temp_path,
-                language=language or None,
-                vad_filter=True,
-                beam_size=5,
-            )
-            text = "".join(segment.text for segment in segments).strip()
+            try:
+                segments, info = model.transcribe(
+                    temp_path,
+                    language=language or None,
+                    vad_filter=False,
+                    beam_size=5,
+                )
+                text = "".join(segment.text for segment in segments).strip()
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=f"Audio transcription failed: {exc}") from exc
         finally:
             _transcribe_semaphore.release()
 

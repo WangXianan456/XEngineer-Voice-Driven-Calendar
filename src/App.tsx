@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { addDays, differenceInMinutes } from "date-fns";
+import { addDays, addMonths, differenceInMinutes, endOfMonth, endOfWeek, format, startOfMonth, startOfWeek, subMonths } from "date-fns";
 import {
   Bell,
   CalendarDays,
@@ -7,6 +7,8 @@ import {
   Clock3,
   Database,
   Download,
+  ChevronLeft,
+  ChevronRight,
   Mic,
   RotateCcw,
   Send,
@@ -25,8 +27,9 @@ import {
 } from "./agent/backendParser";
 import type { CalendarEvent, CreateCalendarEventInput } from "./calendar/eventTypes";
 import { useCalendarEvents } from "./calendar/useCalendarEvents";
-import { speak } from "./speech/synthesis";
+import { speak, warmUpSpeechSynthesis } from "./speech/synthesis";
 import { useLocalAsrRecognition } from "./speech/useLocalAsrRecognition";
+import { useSpeechRecognition } from "./speech/useSpeechRecognition";
 import { formatDateLabel, formatEventTime, formatReminder } from "./utils/dateFormat";
 
 type AgentMessage = {
@@ -89,6 +92,9 @@ const initialMessages: AgentMessage[] = [
   }
 ];
 
+const env = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
+const defaultSpeechProvider = env?.VITE_SPEECH_PROVIDER === "local" ? "local" : "browser";
+
 export function App() {
   const { events, addEvent, restoreEvent, deleteEvent, updateEvent, resetDemoEvents, clearEvents } =
     useCalendarEvents();
@@ -97,15 +103,26 @@ export function App() {
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [lastUndoAction, setLastUndoAction] = useState<UndoAction | null>(null);
   const [lastReferencedEvent, setLastReferencedEvent] = useState<CalendarEvent | null>(null);
-  const speech = useLocalAsrRecognition((text) => {
+  const [speechProvider, setSpeechProvider] = useState<"browser" | "local">(defaultSpeechProvider);
+  const [selectedDate, setSelectedDate] = useState(() => startOfDay(new Date()));
+  const [visibleMonth, setVisibleMonth] = useState(() => startOfMonth(new Date()));
+  const browserSpeech = useSpeechRecognition((text) => {
     setCommand(text);
     handleCommand(text);
   });
+  const localSpeech = useLocalAsrRecognition((text) => {
+    setCommand(text);
+    handleCommand(text);
+  });
+  const speech = speechProvider === "local" ? localSpeech : browserSpeech;
   const backendParserEnabled = isBackendParseEnabled();
 
+  const selectedDateEvents = events.filter((event) => isSameDate(new Date(event.start), selectedDate));
+  const monthEvents = events.filter((event) => isSameMonth(new Date(event.start), visibleMonth));
   const todayEvents = events.filter((event) => formatDateLabel(new Date(event.start)) === "今天");
   const tomorrowEvents = events.filter((event) => formatDateLabel(new Date(event.start)) === "明天");
   const reminderCount = events.filter((event) => event.reminderMinutes > 0).length;
+  const calendarDays = useMemo(() => getMonthCalendarDays(visibleMonth), [visibleMonth]);
   const pendingFields = useMemo(() => getPendingFields(pendingAction), [pendingAction]);
 
   function appendMessage(role: AgentMessage["role"], text: string) {
@@ -182,7 +199,7 @@ export function App() {
     }
 
     if (parsed.intent === "list_events") {
-      appendMessage("agent", formatListReply(parsed.events, parsed.reply));
+      respond(formatListReply(parsed.events, parsed.reply));
       if (parsed.events.length === 1) {
         setLastReferencedEvent(parsed.events[0]);
       }
@@ -229,7 +246,7 @@ export function App() {
           const backendParsed = await parseWithBackend(trimmed, events);
           handledByBackend = backendParsed ? handleBackendParsedCommand(backendParsed, trimmed) : false;
         } catch {
-          appendMessage("agent", "后端增强解析暂时不可用，已使用本地规则兜底。");
+          respond("后端增强解析暂时不可用，已使用本地规则兜底。");
         }
       }
 
@@ -500,7 +517,7 @@ export function App() {
         <div className="topbar-actions" aria-label="全局状态">
           <span className="status-pill">
             <Mic size={16} />
-            {speech.statusLabel}
+            {speechProvider === "local" ? "本地 Whisper" : "浏览器识别"} · {speech.statusLabel}
           </span>
           <span className="status-pill muted">
             <ShieldCheck size={16} />
@@ -520,14 +537,38 @@ export function App() {
               <span className="listening-dot">{speech.statusLabel}</span>
             </div>
 
+            <div className="speech-mode-toggle" aria-label="语音识别模式">
+              <button
+                className={speechProvider === "browser" ? "selected" : ""}
+                type="button"
+                onClick={() => setSpeechProvider("browser")}
+              >
+                浏览器识别
+              </button>
+              <button
+                className={speechProvider === "local" ? "selected" : ""}
+                type="button"
+                onClick={() => setSpeechProvider("local")}
+              >
+                本地 Whisper
+              </button>
+            </div>
+
             <button
               className="mic-button"
               type="button"
               disabled={!speech.isSupported}
-              onClick={speech.status === "listening" ? speech.stopListening : speech.startListening}
+              onClick={() => {
+                warmUpSpeechSynthesis();
+                if (speech.status === "listening") {
+                  speech.stopListening();
+                } else {
+                  speech.startListening();
+                }
+              }}
             >
               <Mic size={34} />
-              <span>{speech.isSupported ? "点击说话" : "请使用 Chrome 或文字输入"}</span>
+              <span>{getMicButtonLabel(speech.isSupported, speech.status)}</span>
             </button>
 
             <div className="command-input">
@@ -538,11 +579,19 @@ export function App() {
                 onChange={(event) => setCommand(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
+                    warmUpSpeechSynthesis();
                     handleCommand();
                   }
                 }}
               />
-              <button type="button" aria-label="发送指令" onClick={() => handleCommand()}>
+              <button
+                type="button"
+                aria-label="发送指令"
+                onClick={() => {
+                  warmUpSpeechSynthesis();
+                  handleCommand();
+                }}
+              >
                 <Send size={18} />
               </button>
             </div>
@@ -636,7 +685,7 @@ export function App() {
           <div className="calendar-header">
             <div>
               <p className="section-kicker">Calendar Workspace</p>
-              <h2>今日与本周安排</h2>
+              <h2>日历与日程</h2>
             </div>
             <button className="secondary-button" type="button" onClick={exportEvents}>
               <Download size={17} />
@@ -647,8 +696,8 @@ export function App() {
           <div className="summary-grid">
             <article>
               <CalendarDays size={20} />
-              <strong>{events.length}</strong>
-              <span>本地日程</span>
+              <strong>{monthEvents.length}</strong>
+              <span>本月日程</span>
             </article>
             <article>
               <Bell size={20} />
@@ -662,29 +711,87 @@ export function App() {
             </article>
           </div>
 
-          <div className="calendar-grid">
-            {Array.from({ length: 7 }, (_, index) => {
-              const date = addDays(new Date(), index);
-              return (
-                <article className={index === 0 ? "day-card active" : "day-card"} key={date.toISOString()}>
-                  <span>{formatDateLabel(date)}</span>
-                  <strong>{date.getDate()}</strong>
-                </article>
-              );
-            })}
-          </div>
+          <section className="month-calendar" aria-label="月历">
+            <div className="month-toolbar">
+              <button
+                className="icon-button"
+                type="button"
+                aria-label="上个月"
+                onClick={() => setVisibleMonth((current) => subMonths(current, 1))}
+              >
+                <ChevronLeft size={18} />
+              </button>
+              <div>
+                <strong>{format(visibleMonth, "yyyy 年 M 月")}</strong>
+                <span>{format(selectedDate, "M 月 d 日")} · {formatWeekdayLabel(selectedDate)}</span>
+              </div>
+              <button
+                className="icon-button"
+                type="button"
+                aria-label="下个月"
+                onClick={() => setVisibleMonth((current) => addMonths(current, 1))}
+              >
+                <ChevronRight size={18} />
+              </button>
+              <button
+                className="secondary-button today-button"
+                type="button"
+                onClick={() => {
+                  const today = startOfDay(new Date());
+                  setSelectedDate(today);
+                  setVisibleMonth(startOfMonth(today));
+                }}
+              >
+                今天
+              </button>
+            </div>
+            <div className="weekday-row" aria-hidden="true">
+              {["一", "二", "三", "四", "五", "六", "日"].map((weekday) => (
+                <span key={weekday}>周{weekday}</span>
+              ))}
+            </div>
+            <div className="month-grid">
+              {calendarDays.map((date) => {
+                const dayEvents = events.filter((event) => isSameDate(new Date(event.start), date));
+                const inCurrentMonth = date.getMonth() === visibleMonth.getMonth();
+                const selected = isSameDate(date, selectedDate);
+                return (
+                  <button
+                    className={[
+                      "month-day",
+                      inCurrentMonth ? "" : "muted",
+                      selected ? "selected" : "",
+                      isSameDate(date, new Date()) ? "today" : ""
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                    type="button"
+                    key={date.toISOString()}
+                    onClick={() => {
+                      setSelectedDate(startOfDay(date));
+                      setVisibleMonth(startOfMonth(date));
+                    }}
+                  >
+                    <span className="day-number">{date.getDate()}</span>
+                    {dayEvents.length > 0 ? <span className="event-count">{dayEvents.length}</span> : null}
+                    <span className="day-event-title">{dayEvents[0]?.title ?? ""}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
 
           <div className="event-list">
             <div className="section-title">
-              <h2>事件列表</h2>
-              <span>{todayEvents.length} 个今日安排</span>
+              <h2>{format(selectedDate, "M 月 d 日")}日程</h2>
+              <span>{selectedDateEvents.length} 个安排</span>
             </div>
-            {events.length === 0 ? (
+            {selectedDateEvents.length === 0 ? (
               <article className="empty-state">
-                当前没有日程。可以点击「填充演示数据」，或输入自然语言指令创建日程。
+                这一天没有日程。可以点击其他日期查看，或输入自然语言指令创建日程。
               </article>
             ) : (
-              events.map((event) => (
+              selectedDateEvents.map((event) => (
                 <article className={`event-item ${event.type}`} key={event.id}>
                   <div>
                     <p>{formatDateLabel(new Date(event.start))}</p>
@@ -786,6 +893,26 @@ function getPendingFields(pendingAction: PendingAction | null) {
   ];
 }
 
+function getMicButtonLabel(isSupported: boolean, status: string) {
+  if (!isSupported) {
+    return "请使用文字输入";
+  }
+
+  if (status === "listening") {
+    return "点击停止录音";
+  }
+
+  if (status === "transcribing") {
+    return "正在本地识别";
+  }
+
+  if (status === "error") {
+    return "重试语音输入";
+  }
+
+  return "点击开始录音";
+}
+
 function getSelectedPendingEvent(
   pendingAction: Extract<PendingAction, { type: "delete_event" | "update_event" }>
 ) {
@@ -867,6 +994,40 @@ function parseChineseNumber(token: string) {
   }
 
   return digits[token] ?? 0;
+}
+
+function getMonthCalendarDays(month: Date) {
+  const start = startOfWeek(startOfMonth(month), { weekStartsOn: 1 });
+  const end = endOfWeek(endOfMonth(month), { weekStartsOn: 1 });
+  const days: Date[] = [];
+  let cursor = start;
+
+  while (cursor <= end) {
+    days.push(cursor);
+    cursor = addDays(cursor, 1);
+  }
+
+  return days;
+}
+
+function isSameMonth(first: Date, second: Date) {
+  return first.getFullYear() === second.getFullYear() && first.getMonth() === second.getMonth();
+}
+
+function isSameDate(first: Date, second: Date) {
+  return (
+    first.getFullYear() === second.getFullYear() &&
+    first.getMonth() === second.getMonth() &&
+    first.getDate() === second.getDate()
+  );
+}
+
+function startOfDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function formatWeekdayLabel(date: Date) {
+  return `周${["日", "一", "二", "三", "四", "五", "六"][date.getDay()]}`;
 }
 
 function findConflictingEvents(start: Date, end: Date, events: CalendarEvent[]) {
