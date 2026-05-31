@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useReducer, useState } from "react";
 import { addDays, addMonths, differenceInMinutes, endOfMonth, endOfWeek, format, startOfMonth, startOfWeek, subMonths } from "date-fns";
 import {
   Bell,
@@ -18,6 +18,20 @@ import {
 } from "lucide-react";
 import { parseCalendarCommand } from "./agent/commandParser";
 import {
+  agentReducer,
+  createInitialAgentState,
+  createCandidateSelectionSummary,
+  createCreatePendingAction,
+  createDeletePendingAction,
+  createConfirmPendingActionResult,
+  createReminderPendingAction,
+  createUpdatePendingAction,
+  getSelectedPendingEvent,
+  type AgentMessage,
+  type PendingAction,
+  type UndoAction
+} from "./agent/agentStateMachine";
+import {
   findBackendTargetEvents,
   isBackendParseEnabled,
   parseBackendDateRange,
@@ -32,49 +46,6 @@ import { useLocalAsrRecognition } from "./speech/useLocalAsrRecognition";
 import { useSpeechRecognition } from "./speech/useSpeechRecognition";
 import { formatDateLabel, formatEventTime, formatReminder } from "./utils/dateFormat";
 
-type AgentMessage = {
-  id: string;
-  role: "user" | "agent";
-  text: string;
-};
-
-type PendingAction =
-  | {
-      type: "create_event";
-      event: CreateCalendarEventInput;
-      conflicts: CalendarEvent[];
-      summary: string;
-    }
-  | {
-      type: "delete_event";
-      candidates: CalendarEvent[];
-      selectedIndex: number | null;
-      summary: string;
-    }
-  | {
-      type: "update_event";
-      candidates: CalendarEvent[];
-      selectedIndex: number | null;
-      start?: Date;
-      end?: Date;
-      reminderMinutes?: number;
-      summary: string;
-    };
-
-type UndoAction =
-  | {
-      type: "create_event";
-      event: CalendarEvent;
-    }
-  | {
-      type: "delete_event";
-      event: CalendarEvent;
-    }
-  | {
-      type: "update_event";
-      event: CalendarEvent;
-    };
-
 const examples = [
   "明天下午三点开产品评审会，提前十分钟提醒我",
   "我明天有什么安排",
@@ -84,14 +55,6 @@ const examples = [
   "今天晚上八点提醒我复盘项目"
 ];
 
-const initialMessages: AgentMessage[] = [
-  {
-    id: "msg-1",
-    role: "agent",
-    text: "说出或输入一条日程指令，我会先展示理解结果，再等待你确认写入。"
-  }
-];
-
 const env = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
 const defaultSpeechProvider = env?.VITE_SPEECH_PROVIDER === "local" ? "local" : "browser";
 
@@ -99,10 +62,7 @@ export function App() {
   const { events, addEvent, restoreEvent, deleteEvent, updateEvent, resetDemoEvents, clearEvents } =
     useCalendarEvents();
   const [command, setCommand] = useState("");
-  const [messages, setMessages] = useState<AgentMessage[]>(initialMessages);
-  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
-  const [lastUndoAction, setLastUndoAction] = useState<UndoAction | null>(null);
-  const [lastReferencedEvent, setLastReferencedEvent] = useState<CalendarEvent | null>(null);
+  const [agentState, dispatchAgent] = useReducer(agentReducer, undefined, createInitialAgentState);
   const [speechProvider, setSpeechProvider] = useState<"browser" | "local">(defaultSpeechProvider);
   const [selectedDate, setSelectedDate] = useState(() => startOfDay(new Date()));
   const [visibleMonth, setVisibleMonth] = useState(() => startOfMonth(new Date()));
@@ -116,6 +76,7 @@ export function App() {
   });
   const speech = speechProvider === "local" ? localSpeech : browserSpeech;
   const backendParserEnabled = isBackendParseEnabled();
+  const { messages, pendingAction, lastUndoAction, lastReferencedEvent } = agentState;
 
   const selectedDateEvents = events.filter((event) => isSameDate(new Date(event.start), selectedDate));
   const monthEvents = events.filter((event) => isSameMonth(new Date(event.start), visibleMonth));
@@ -126,14 +87,14 @@ export function App() {
   const pendingFields = useMemo(() => getPendingFields(pendingAction), [pendingAction]);
 
   function appendMessage(role: AgentMessage["role"], text: string) {
-    setMessages((current) => [
-      ...current,
-      {
+    dispatchAgent({
+      type: "append_message",
+      message: {
         id: `msg-${Date.now()}-${Math.random().toString(16).slice(2)}`,
         role,
         text
       }
-    ]);
+    });
   }
 
   function respond(text: string) {
@@ -165,7 +126,7 @@ export function App() {
     }
 
     if (pendingAction && /取消|不用|算了/.test(trimmed)) {
-      setPendingAction(null);
+      dispatchAgent({ type: "clear_pending_action" });
       respond("已取消当前待确认操作。");
       setCommand("");
       return;
@@ -182,26 +143,18 @@ export function App() {
 
     if (parsed.intent === "create_event") {
       const conflicts = findConflictingEvents(parsed.event.start, parsed.event.end, events);
-      setPendingAction({
-        type: "create_event",
-        event: parsed.event,
-        conflicts,
-        summary:
-          conflicts.length > 0
-            ? `${parsed.reply} 但这个时间和「${conflicts[0].title}」冲突，是否仍然添加？`
-            : parsed.reply
+      const pendingCreate = createCreatePendingAction(parsed.event, conflicts, parsed.reply);
+      dispatchAgent({
+        type: "set_pending_action",
+        pendingAction: pendingCreate
       });
-      respond(
-        conflicts.length > 0
-          ? `${parsed.reply} 但这个时间和「${conflicts[0].title}」冲突，是否仍然添加？`
-          : parsed.reply
-      );
+      respond(pendingCreate.summary);
     }
 
     if (parsed.intent === "list_events") {
       respond(formatListReply(parsed.events, parsed.reply));
       if (parsed.events.length === 1) {
-        setLastReferencedEvent(parsed.events[0]);
+        dispatchAgent({ type: "set_last_referenced_event", event: parsed.events[0] });
       }
     }
 
@@ -268,18 +221,13 @@ export function App() {
       }
 
       const conflicts = findConflictingEvents(eventInput.start, eventInput.end, events);
-      const summary =
-        conflicts.length > 0
-          ? `${parsed.reply} 但这个时间和「${conflicts[0].title}」冲突，是否仍然添加？`
-          : parsed.reply;
+      const pendingCreate = createCreatePendingAction(eventInput, conflicts, parsed.reply);
 
-      setPendingAction({
-        type: "create_event",
-        event: eventInput,
-        conflicts,
-        summary
+      dispatchAgent({
+        type: "set_pending_action",
+        pendingAction: pendingCreate
       });
-      respond(summary);
+      respond(pendingCreate.summary);
       return true;
     }
 
@@ -323,28 +271,21 @@ export function App() {
   }
 
   function requestDeleteCandidates(candidates: CalendarEvent[]) {
-    const selectedIndex = candidates.length === 1 ? 0 : null;
-    const summary =
-      candidates.length === 1
-        ? `确认删除「${candidates[0].title}」吗？删除后可以撤销最近一次操作。`
-        : `找到 ${candidates.length} 个匹配日程，请先选择要删除的候选。`;
+    const pendingDelete = createDeletePendingAction(candidates);
 
-    setPendingAction({
-      type: "delete_event",
-      candidates,
-      selectedIndex,
-      summary
+    dispatchAgent({
+      type: "set_pending_action",
+      pendingAction: pendingDelete
     });
-    setLastReferencedEvent(candidates[0]);
+    dispatchAgent({ type: "set_last_referenced_event", event: candidates[0] });
     respond(
       candidates.length === 1
         ? `我找到了「${candidates[0].title}」，删除前需要你确认。`
-        : `${summary} 可以说“第一个”或点击候选。`
+        : `${pendingDelete.summary} 可以说“第一个”或点击候选。`
     );
   }
 
   function requestUpdateCandidates(candidates: CalendarEvent[], start: Date, end: Date, reply?: string) {
-    const selectedIndex = candidates.length === 1 ? 0 : null;
     const summary =
       candidates.length === 1
         ? `将「${candidates[0].title}」从 ${formatEventTime(candidates[0].start, candidates[0].end)} 改到 ${formatEventTime(
@@ -352,28 +293,23 @@ export function App() {
             end.toISOString()
           )}。`
         : `找到 ${candidates.length} 个匹配日程，请先选择要修改的候选。`;
+    const pendingUpdate = createUpdatePendingAction(candidates, start, end, summary);
 
-    setPendingAction({
-      type: "update_event",
-      candidates,
-      selectedIndex,
-      start,
-      end,
-      summary
+    dispatchAgent({
+      type: "set_pending_action",
+      pendingAction: pendingUpdate
     });
-    setLastReferencedEvent(candidates[0]);
-    respond(candidates.length === 1 ? (reply ?? summary) : `${summary} 可以说“第一个”或点击候选。`);
+    dispatchAgent({ type: "set_last_referenced_event", event: candidates[0] });
+    respond(candidates.length === 1 ? (reply ?? pendingUpdate.summary) : `${pendingUpdate.summary} 可以说“第一个”或点击候选。`);
   }
 
   function requestReminderUpdate(event: CalendarEvent, reminderMinutes: number) {
-    setPendingAction({
-      type: "update_event",
-      candidates: [event],
-      selectedIndex: 0,
-      reminderMinutes,
-      summary: `将「${event.title}」的提醒改为 ${formatReminder(reminderMinutes)}。`
+    const pendingReminder = createReminderPendingAction(event, reminderMinutes, formatReminder(reminderMinutes));
+    dispatchAgent({
+      type: "set_pending_action",
+      pendingAction: pendingReminder
     });
-    setLastReferencedEvent(event);
+    dispatchAgent({ type: "set_last_referenced_event", event });
     respond(`我会把「${event.title}」的提醒改为 ${formatReminder(reminderMinutes)}，请确认。`);
   }
 
@@ -389,20 +325,13 @@ export function App() {
     }
 
     const event = pendingAction.candidates[index];
-    setPendingAction({
-      ...pendingAction,
-      selectedIndex: index,
-      summary:
-        pendingAction.type === "delete_event"
-          ? `确认删除「${event.title}」吗？删除后可以撤销最近一次操作。`
-          : pendingAction.reminderMinutes !== undefined
-            ? `将「${event.title}」的提醒改为 ${formatReminder(pendingAction.reminderMinutes)}。`
-            : `将「${event.title}」从 ${formatEventTime(event.start, event.end)} 改到 ${formatEventTime(
-                pendingAction.start!.toISOString(),
-                pendingAction.end!.toISOString()
-              )}。`
+    const summary = createCandidateSelectionSummary(pendingAction, event, formatEventTime, formatReminder);
+    dispatchAgent({
+      type: "select_candidate",
+      index,
+      referencedEvent: event,
+      summary
     });
-    setLastReferencedEvent(event);
     respond(`已选择第 ${index + 1} 个：「${event.title}」。请确认或取消。`);
   }
 
@@ -412,64 +341,49 @@ export function App() {
       return;
     }
 
-    if (pendingAction.type === "create_event") {
-      const event = addEvent(pendingAction.event);
-      setLastUndoAction({ type: "create_event", event });
-      setLastReferencedEvent(event);
+    const result = createConfirmPendingActionResult(pendingAction);
+
+    if (result.type === "needs_selection") {
+      respond(result.message);
+      return;
+    }
+
+    if (result.type === "create_event") {
+      const event = addEvent(result.event);
+      dispatchAgent({ type: "set_last_undo_action", undoAction: { type: "create_event", event } });
+      dispatchAgent({ type: "set_last_referenced_event", event });
       respond(`已添加「${event.title}」，${formatEventTime(event.start, event.end)}。`);
     }
 
-    if (pendingAction.type === "delete_event") {
-      const event = getSelectedPendingEvent(pendingAction);
-      if (!event) {
-        respond("请先选择要删除的候选。");
-        return;
-      }
-
-      deleteEvent(event.id);
-      setLastUndoAction({ type: "delete_event", event });
-      setLastReferencedEvent(event);
-      respond(`已删除「${event.title}」。`);
+    if (result.type === "delete_event") {
+      deleteEvent(result.event.id);
+      dispatchAgent({ type: "set_last_undo_action", undoAction: { type: "delete_event", event: result.event } });
+      dispatchAgent({ type: "set_last_referenced_event", event: result.event });
+      respond(`已删除「${result.event.title}」。`);
     }
 
-    if (pendingAction.type === "update_event") {
-      const event = getSelectedPendingEvent(pendingAction);
-      if (!event) {
-        respond("请先选择要修改的候选。");
-        return;
-      }
-
-      const updates: Partial<CalendarEvent> = {};
-      if (pendingAction.start && pendingAction.end) {
-        updates.start = pendingAction.start.toISOString();
-        updates.end = pendingAction.end.toISOString();
-      }
-      if (pendingAction.reminderMinutes !== undefined) {
-        updates.reminderMinutes = pendingAction.reminderMinutes;
-      }
-
-      setLastUndoAction({ type: "update_event", event });
-      updateEvent(event.id, updates);
-      setLastReferencedEvent({ ...event, ...updates });
-      respond(`已修改「${event.title}」。`);
+    if (result.type === "update_event") {
+      dispatchAgent({ type: "set_last_undo_action", undoAction: { type: "update_event", event: result.event } });
+      updateEvent(result.event.id, result.updates);
+      dispatchAgent({ type: "set_last_referenced_event", event: { ...result.event, ...result.updates } });
+      respond(`已修改「${result.event.title}」。`);
     }
 
-    setPendingAction(null);
+    dispatchAgent({ type: "clear_pending_action", phase: "completed" });
   }
 
   function cancelPendingAction() {
-    setPendingAction(null);
+    dispatchAgent({ type: "clear_pending_action" });
     respond("已取消当前待确认操作。");
   }
 
   function requestDeleteEvent(event: CalendarEvent) {
-    setPendingAction({
-      type: "delete_event",
-      candidates: [event],
-      selectedIndex: 0,
-      summary: `确认删除「${event.title}」吗？`
+    const pendingDelete = createDeletePendingAction([event]);
+    dispatchAgent({
+      type: "set_pending_action",
+      pendingAction: pendingDelete
     });
-    setLastReferencedEvent(event);
+    dispatchAgent({ type: "set_last_referenced_event", event });
     respond(`删除「${event.title}」前需要确认。`);
   }
 
@@ -494,7 +408,7 @@ export function App() {
       respond(`已撤销对「${lastUndoAction.event.title}」的修改。`);
     }
 
-    setLastUndoAction(null);
+    dispatchAgent({ type: "clear_last_undo_action" });
   }
 
   function exportEvents() {
@@ -911,16 +825,6 @@ function getMicButtonLabel(isSupported: boolean, status: string) {
   }
 
   return "点击开始录音";
-}
-
-function getSelectedPendingEvent(
-  pendingAction: Extract<PendingAction, { type: "delete_event" | "update_event" }>
-) {
-  if (pendingAction.selectedIndex === null) {
-    return null;
-  }
-
-  return pendingAction.candidates[pendingAction.selectedIndex] ?? null;
 }
 
 function parseCandidateChoice(text: string) {
