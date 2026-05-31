@@ -391,6 +391,36 @@ dd {
   flex-wrap: wrap;
 }
 
+.candidate-list {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+
+.candidate-option {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  border: 1px solid #d8c7a9;
+  border-radius: 8px;
+  background: #fffefa;
+  color: var(--text);
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.candidate-option:hover,
+.candidate-option.selected {
+  border-color: rgb(35 87 198 / 48%);
+  background: var(--accent-soft);
+}
+
+.candidate-option span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .primary-button,
 .secondary-button {
   display: inline-flex;

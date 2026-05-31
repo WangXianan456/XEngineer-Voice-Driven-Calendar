@@ -61,7 +61,7 @@
 - SpeechSynthesis API
 - localStorage
 - Vitest
-- 可选：Serverless AI 解析代理
+- 可选：FastAPI AI / ASR 代理
 
 ## 本地运行
 
@@ -89,6 +89,62 @@ npm run preview
 ```text
 http://127.0.0.1:5173
 ```
+
+## 可选后端增强
+
+后端只做两件事：保护 DeepSeek Key 并提供本地免费语音识别接口；日历写入仍由前端确认后执行。
+
+先复制环境变量示例：
+
+```bash
+copy .env.example .env.local
+```
+
+把轮换后的 DeepSeek Key 写入 `.env.local`：
+
+```text
+DEEPSEEK_API_KEY=your_rotated_key
+DEEPSEEK_MODEL=deepseek-v4-flash
+VITE_API_BASE_URL=http://localhost:8000
+```
+
+启动后端：
+
+```bash
+cd backend
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
+```
+
+接口：
+
+- `POST /api/parse-command`：DeepSeek 日历意图 JSON 解析。
+- `POST /api/asr`：`faster-whisper` 本地语音转文字。
+- `GET /api/health`：健康检查。
+
+前端默认仍使用本地规则解析。只有配置了 `VITE_API_BASE_URL`，并且本地规则返回 `unknown` 时，才会调用后端 DeepSeek 兜底。
+
+ASR 默认使用 CPU，适合本机稳定演示：
+
+```text
+ASR_MODEL=base
+ASR_DEVICE=cpu
+ASR_COMPUTE_TYPE=int8
+ASR_MAX_CONCURRENT=1
+```
+
+如果部署到 CUDA 12.x / cuDNN 环境可用的 NVIDIA GPU 主机，可以切换为 GPU：
+
+```text
+ASR_MODEL=small
+ASR_DEVICE=cuda
+ASR_COMPUTE_TYPE=float16
+ASR_MAX_CONCURRENT=1
+```
+
+GPU 版本建议先从 `base` 或 `small` 试起。`medium` 及以上模型会显著增加显存和延迟压力，不建议作为默认演示配置。
 
 生产预览默认运行在：
 
@@ -188,5 +244,6 @@ P2 后续：
 - 已接入浏览器语音识别和语音播报。
 - 已实现写操作确认、冲突提示、最近一次操作撤销和 JSON 导出。
 - 已实现空闲时间查询。
+- 已新增可选 FastAPI 后端：DeepSeek 意图解析代理与 `faster-whisper` 本地 ASR。
 - `npm run test -- --run` 通过，1 个测试文件、4 个测试用例。
 - `npm run build` 通过。

@@ -2,22 +2,48 @@
 
 ## 当前实现基线
 
-当前系统采用前端本地闭环：
+当前系统采用前端优先、后端增强的闭环：
 
 ```text
-Web Speech API 语音转文字
+MediaRecorder 录音
+-> FastAPI /api/asr
+-> faster-whisper 本地语音转文字
 -> 本地规则解析器识别意图和时间
 -> 展示结构化确认卡片
 -> 用户确认后写入 localStorage
 -> SpeechSynthesis 语音播报
 ```
 
+当前还新增了可选后端增强路径：
+
+```text
+本地规则解析失败
+-> FastAPI /api/parse-command
+-> DeepSeek JSON 解析
+-> 回到前端确认卡片
+```
+
+如果后端不可用，文字输入仍然是完整兜底入口。
+
+语音识别本地模型接口：
+
+```text
+音频文件
+-> FastAPI /api/asr
+-> faster-whisper
+-> 返回识别文本
+```
+
 核心代码：
 
 - 意图识别和中文时间解析：`src/agent/commandParser.ts`
-- 语音识别：`src/speech/useSpeechRecognition.ts`
+- 语音识别：`src/speech/useLocalAsrRecognition.ts`
 - 语音播报：`src/speech/synthesis.ts`
 - 确认状态机和 UI：`src/App.tsx`
+- 后端 LLM 解析客户端：`src/agent/backendParser.ts`
+- 后端 API：`backend/app/main.py`
+- DeepSeek 代理：`backend/app/deepseek_client.py`
+- 本地 ASR：`backend/app/asr.py`
 
 当前支持意图：
 
@@ -67,6 +93,8 @@ Web Speech API 语音转文字
 
 优先级：P0
 
+状态：已完成基础接入。
+
 要做：
 
 - 保存最近一次被提到的事件。
@@ -86,6 +114,8 @@ Web Speech API 语音转文字
 ## 阶段 C：LLM JSON 解析兜底
 
 优先级：P1
+
+状态：已完成基础接入。
 
 要做：
 
@@ -118,19 +148,20 @@ Web Speech API 语音转文字
 
 优先级：P1
 
-当前 Web Speech API 的优势是接入快、无需后端；限制是浏览器兼容和中文识别质量不稳定。
+状态：后端本地 ASR 接口已完成，前端麦克风已切换到 `MediaRecorder -> /api/asr`。
+
+当前本地 ASR 的优势是免费、可控、不依赖浏览器 Web Speech；限制是首次需要下载模型，并占用本机 CPU/GPU 算力。
 
 要做：
 
-- 优化 Web Speech 体验：
+- 优化本地 ASR 体验：
   - 录音中、识别中、失败、无权限状态更明确。
   - 识别结果先进入输入框，允许用户编辑后发送。
   - 支持连续识别和手动停止。
-- 可选接入云端 STT：
-  - OpenAI Whisper / Audio Transcriptions
-  - Azure Speech
-  - Google Speech-to-Text
-  - 讯飞 / 腾讯云 / 阿里云语音识别
+- 可选接入本地 STT：
+  - `faster-whisper`
+  - CPU 默认：`base / cpu / int8`
+  - GPU 预留：`small / cuda / float16`
 - 增加语音纠错：
   - “产品平审会” -> “产品评审会”
   - “提前十分钟题型” -> “提前十分钟提醒”
@@ -145,11 +176,11 @@ Web Speech API 语音转文字
 
 ```text
 1. 扩充本地规则和测试
-2. 增加上下文指代
-3. 增加多候选选择
-4. 接入 LLM JSON 兜底
+2. 增加上下文指代（已完成基础接入）
+3. 增加多候选选择（已完成基础接入）
+4. 接入 LLM JSON 兜底（已完成基础接入）
 5. 优化语音状态
-6. 可选接入云端 STT
+6. 前端麦克风接入本地 ASR（已完成基础接入）
 ```
 
 ## 工程原则
