@@ -70,6 +70,7 @@ async def transcribe_audio(file: UploadFile, language: str | None = "zh") -> Asr
         return AsrResponse(
             text=text,
             language=getattr(info, "language", None),
+            languageProbability=getattr(info, "language_probability", None),
             duration=getattr(info, "duration", None),
         )
     finally:

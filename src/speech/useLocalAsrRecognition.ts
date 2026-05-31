@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from "react";
+import type { SpeechRecognitionMeta } from "./speechCorrection";
 
 type LocalAsrStatus = "unsupported" | "idle" | "listening" | "transcribing" | "error";
 
@@ -6,12 +7,13 @@ type AsrResponse = {
   text: string;
   language?: string;
   duration?: number;
+  languageProbability?: number;
 };
 
 const env = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
 const apiBaseUrl = env?.VITE_API_BASE_URL?.trim();
 
-export function useLocalAsrRecognition(onResult: (text: string) => void) {
+export function useLocalAsrRecognition(onResult: (text: string, meta: SpeechRecognitionMeta) => void) {
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const autoStopTimerRef = useRef<number | null>(null);
@@ -122,10 +124,22 @@ export function useLocalAsrRecognition(onResult: (text: string) => void) {
       const text = result.text.trim();
 
       if (!text) {
-        throw new Error("ASR returned empty text");
+        onResult("", {
+          source: "local",
+          confidence: 0,
+          language: result.language,
+          duration: result.duration
+        });
+        setStatus("idle");
+        return;
       }
 
-      onResult(text);
+      onResult(text, {
+        source: "local",
+        confidence: result.languageProbability,
+        language: result.language,
+        duration: result.duration
+      });
       setStatus("idle");
     } catch (error) {
       console.error("Local ASR transcription failed", error);

@@ -6,6 +6,7 @@ import httpx
 from fastapi import HTTPException
 
 from .config import settings
+from .response_validator import validate_parse_command_response
 from .schemas import ParseCommandRequest, ParseCommandResponse
 
 
@@ -83,9 +84,11 @@ async def parse_with_deepseek(payload: ParseCommandRequest) -> ParseCommandRespo
     parsed = _parse_json_content(content)
 
     try:
-        return ParseCommandResponse.model_validate(parsed)
+        validated = ParseCommandResponse.model_validate(parsed)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"DeepSeek returned invalid JSON schema: {exc}") from exc
+
+    return validate_parse_command_response(validated)
 
 
 def _parse_json_content(content: str) -> dict[str, Any]:

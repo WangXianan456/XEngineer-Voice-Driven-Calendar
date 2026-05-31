@@ -75,6 +75,7 @@ npm run dev
 ```bash
 npm run build
 npm run test
+npm run eval:parser
 ```
 
 预览生产包：
@@ -164,6 +165,15 @@ http://127.0.0.1:4173
 
 如果使用静态服务器，执行 `npm run build` 后发布 `dist/` 目录即可。
 
+完整部署说明见 [docs/19-部署说明.md](./docs/19-部署说明.md)。
+
+部署注意事项：
+
+- 默认演示路径使用浏览器语音识别。
+- 本地 Whisper 只作为可选模式，不作为线上静态部署硬依赖。
+- `.env`、`.env.local` 不能提交，真实 DeepSeek Key 只能留在本机或后端运行环境。
+- 静态生产站不要把 API Key 写入 `VITE_` 前缀变量。
+
 ## 第一版功能范围
 
 P0 必做：
@@ -205,6 +215,8 @@ P2 后续：
 - [06-后端设计文档](./docs/06-后端设计文档.md)
 - [08-测试设计文档](./docs/08-测试设计文档.md)
 - [12-演示脚本](./docs/12-演示脚本.md)
+- [20-演示视频方案](./docs/20-演示视频方案.md)
+- [21-演示视频拍摄执行方案](./docs/21-演示视频拍摄执行方案.md)
 
 ## 开发策略
 
@@ -237,6 +249,7 @@ P2 后续：
 - 已完成开发计划。
 - 已完成前端、后端、测试、运维设计。
 - 已完成风险预案和演示脚本。
+- 已新增演示视频方案和拍摄执行方案。
 - 已初始化 React + Vite + TypeScript 前端项目。
 - 已实现语音日历工作台首屏。
 - 已实现 localStorage 日历事件存储。
@@ -245,5 +258,13 @@ P2 后续：
 - 已实现写操作确认、冲突提示、最近一次操作撤销和 JSON 导出。
 - 已实现空闲时间查询。
 - 已新增可选 FastAPI 后端：DeepSeek 意图解析代理与 `faster-whisper` 本地 ASR。
-- `npm run test -- --run` 通过，1 个测试文件、4 个测试用例。
+- 已抽取 Agent 状态机，覆盖待确认动作、多候选选择、取消和确认执行结果。
+- 已建立解析器评测集，覆盖新增、查询、修改、删除、空闲时间、下周范围、安全候选和降级输入。
+- 已完成浏览器端文字兜底演示路径回归：新增、查询、修改、冲突、删除、撤销均通过。
+- 已接入 deterministic validator，本地规则和 DeepSeek 兜底输出进入确认卡片前都会校验时间、提醒和候选安全性。
+- 后端 DeepSeek JSON 输出已接入 deterministic schema validator，非法结构会降级为 `unknown` 追问，不直接返回给前端执行链路。
+- 已新增短期 Agent Memory，支持最近日程引用、多候选记忆、候选纠正、提醒省略修改、地点省略修改和“刚才那个取消”。
+- `npm run test` 通过，5 个测试文件、90 个测试用例。
+- `conda run -n base python -m unittest discover -s backend\tests -p "test_*.py"` 通过，14 个后端 validator / API 测试。
+- `npm run eval:parser` 可输出解析器指标：55 cases，intent accuracy 100%，slot accuracy 100%，fallback rate 100%，unsafe action rate 0%。
 - `npm run build` 通过。

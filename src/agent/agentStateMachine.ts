@@ -1,4 +1,12 @@
 import type { CalendarEvent, CreateCalendarEventInput } from "../calendar/eventTypes";
+import {
+  createInitialAgentMemory,
+  rememberCandidates,
+  rememberIntent,
+  rememberMentionedEvents,
+  selectMemoryCandidate,
+  type AgentMemory
+} from "./agentMemory";
 
 export type AgentMessage = {
   id: string;
@@ -26,6 +34,7 @@ export type PendingAction =
       start?: Date;
       end?: Date;
       reminderMinutes?: number;
+      location?: string;
       summary: string;
     };
 
@@ -55,7 +64,7 @@ export type ConfirmPendingActionResult =
   | {
       type: "update_event";
       event: CalendarEvent;
-      updates: Partial<Pick<CalendarEvent, "start" | "end" | "reminderMinutes">>;
+      updates: Partial<Pick<CalendarEvent, "start" | "end" | "reminderMinutes" | "location">>;
     }
   | {
       type: "needs_selection";
@@ -75,6 +84,7 @@ export type AgentState = {
   pendingAction: PendingAction | null;
   lastUndoAction: UndoAction | null;
   lastReferencedEvent: CalendarEvent | null;
+  memory: AgentMemory;
 };
 
 export type AgentStateEvent =
@@ -108,6 +118,24 @@ export type AgentStateEvent =
       event: CalendarEvent | null;
     }
   | {
+      type: "remember_intent";
+      intent: string;
+    }
+  | {
+      type: "remember_mentioned_events";
+      events: CalendarEvent[];
+      intent?: string;
+    }
+  | {
+      type: "remember_candidates";
+      candidates: CalendarEvent[];
+      intent?: string;
+    }
+  | {
+      type: "select_memory_candidate";
+      index: number;
+    }
+  | {
       type: "mark_failed";
     };
 
@@ -125,7 +153,8 @@ export function createInitialAgentState(): AgentState {
     messages: initialAgentMessages,
     pendingAction: null,
     lastUndoAction: null,
-    lastReferencedEvent: null
+    lastReferencedEvent: null,
+    memory: createInitialAgentMemory()
   };
 }
 
@@ -187,7 +216,40 @@ export function agentReducer(state: AgentState, event: AgentStateEvent): AgentSt
   if (event.type === "set_last_referenced_event") {
     return {
       ...state,
-      lastReferencedEvent: event.event
+      lastReferencedEvent: event.event,
+      memory: event.event ? rememberMentionedEvents(state.memory, [event.event]) : state.memory
+    };
+  }
+
+  if (event.type === "remember_intent") {
+    return {
+      ...state,
+      memory: rememberIntent(state.memory, event.intent)
+    };
+  }
+
+  if (event.type === "remember_mentioned_events") {
+    return {
+      ...state,
+      memory: rememberMentionedEvents(state.memory, event.events, event.intent),
+      lastReferencedEvent: event.events.length === 1 ? event.events[0] : state.lastReferencedEvent
+    };
+  }
+
+  if (event.type === "remember_candidates") {
+    return {
+      ...state,
+      memory: rememberCandidates(state.memory, event.candidates, event.intent),
+      lastReferencedEvent: event.candidates.length === 1 ? event.candidates[0] : state.lastReferencedEvent
+    };
+  }
+
+  if (event.type === "select_memory_candidate") {
+    const selected = selectMemoryCandidate(state.memory, event.index);
+    return {
+      ...state,
+      memory: selected.memory,
+      lastReferencedEvent: selected.event ?? state.lastReferencedEvent
     };
   }
 
@@ -272,6 +334,19 @@ export function createReminderPendingAction(
   };
 }
 
+export function createLocationPendingAction(
+  event: CalendarEvent,
+  location: string
+): Extract<PendingAction, { type: "update_event" }> {
+  return {
+    type: "update_event",
+    candidates: [event],
+    selectedIndex: 0,
+    location,
+    summary: `将「${event.title}」的地点改为 ${location}。`
+  };
+}
+
 export function createCandidateSelectionSummary(
   pendingAction: Extract<PendingAction, { type: "delete_event" | "update_event" }>,
   event: CalendarEvent,
@@ -284,6 +359,10 @@ export function createCandidateSelectionSummary(
 
   if (pendingAction.reminderMinutes !== undefined) {
     return `将「${event.title}」的提醒改为 ${formatReminder(pendingAction.reminderMinutes)}。`;
+  }
+
+  if (pendingAction.location !== undefined) {
+    return `将「${event.title}」的地点改为 ${pendingAction.location}。`;
   }
 
   if (pendingAction.start && pendingAction.end) {
@@ -319,7 +398,7 @@ export function createConfirmPendingActionResult(pendingAction: PendingAction): 
     };
   }
 
-  const updates: Partial<Pick<CalendarEvent, "start" | "end" | "reminderMinutes">> = {};
+  const updates: Partial<Pick<CalendarEvent, "start" | "end" | "reminderMinutes" | "location">> = {};
   if (pendingAction.start && pendingAction.end) {
     updates.start = pendingAction.start.toISOString();
     updates.end = pendingAction.end.toISOString();
@@ -327,6 +406,10 @@ export function createConfirmPendingActionResult(pendingAction: PendingAction): 
 
   if (pendingAction.reminderMinutes !== undefined) {
     updates.reminderMinutes = pendingAction.reminderMinutes;
+  }
+
+  if (pendingAction.location !== undefined) {
+    updates.location = pendingAction.location;
   }
 
   return {

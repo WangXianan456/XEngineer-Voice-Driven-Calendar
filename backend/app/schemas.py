@@ -50,4 +50,5 @@ class ParseCommandResponse(BaseModel):
 class AsrResponse(BaseModel):
     text: str
     language: str | None = None
+    languageProbability: float | None = Field(default=None, ge=0, le=1)
     duration: float | None = None

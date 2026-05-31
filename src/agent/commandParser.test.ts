@@ -162,6 +162,30 @@ describe("parseCalendarCommand", () => {
     expect(result.events.map((event) => event.title)).toEqual(["周一例会", "周三评审"]);
   });
 
+  it("keeps the matched event date when updating time without a new date", () => {
+    const tomorrow = addDays(baseDate, 1);
+    const events = [
+      createCalendarEvent({
+        title: "产品评审会",
+        start: set(tomorrow, { hours: 15, minutes: 0, seconds: 0, milliseconds: 0 }),
+        end: set(tomorrow, { hours: 16, minutes: 0, seconds: 0, milliseconds: 0 }),
+        reminderMinutes: 10,
+        sourceText: "明天下午三点开产品评审会"
+      })
+    ];
+
+    const result = parseCalendarCommand("把产品评审会改到下午四点", events, baseDate);
+
+    expect(result.intent).toBe("update_event");
+
+    if (result.intent !== "update_event") {
+      throw new Error("expected update_event");
+    }
+
+    expect(result.start?.getDate()).toBe(tomorrow.getDate());
+    expect(result.start?.getHours()).toBe(16);
+  });
+
   it("lists next workday events", () => {
     const monday = new Date("2026-06-01T10:00:00+08:00");
     const sunday = new Date("2026-06-07T10:00:00+08:00");

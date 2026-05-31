@@ -98,17 +98,21 @@ export function parseCalendarCommand(
   if (isUpdateIntent(normalized)) {
     const parsedTime = parseDateTime(normalized, now);
     const candidates = findMatchingEvents(normalized, events, now);
+    const updateTime =
+      parsedTime && candidates.length > 0 && !hasExplicitDateScope(normalized)
+        ? moveParsedTimeToDate(parsedTime, new Date(candidates[0].start))
+        : parsedTime;
 
     return {
       intent: "update_event",
       candidates,
-      start: parsedTime?.start,
-      end: parsedTime?.end,
+      start: updateTime?.start,
+      end: updateTime?.end,
       reply:
         candidates.length === 0
           ? "没有找到要修改的日程，请补充标题或日期。"
-          : parsedTime
-            ? `我会把「${candidates[0].title}」改到 ${formatCommandTime(parsedTime.start)}，请确认。`
+          : updateTime
+            ? `我会把「${candidates[0].title}」改到 ${formatCommandTime(updateTime.start)}，请确认。`
             : "我找到了日程，但还不能确定新的时间，请补充时间。"
     };
   }
@@ -173,7 +177,7 @@ export function parseCalendarCommand(
 }
 
 function isCreateIntent(text: string) {
-  return /添加|创建|安排|约.+会|帮我约|开.+会|提醒我/.test(text);
+  return /添加|创建|安排|约.+会|帮我约|开|提醒我/.test(text);
 }
 
 function isListIntent(text: string) {
@@ -190,6 +194,25 @@ function isUpdateIntent(text: string) {
 
 function isFreeTimeIntent(text: string) {
   return /空闲|有空|什么时候有空|有没有空/.test(text);
+}
+
+function hasExplicitDateScope(text: string) {
+  return /今天|今晚|今早|明天|明早|明晚|后天|下周|工作日/.test(text);
+}
+
+function moveParsedTimeToDate(parsedTime: ParsedDateTime, date: Date): ParsedDateTime {
+  const start = set(date, {
+    hours: parsedTime.start.getHours(),
+    minutes: parsedTime.start.getMinutes(),
+    seconds: 0,
+    milliseconds: 0
+  });
+  const duration = parsedTime.end.getTime() - parsedTime.start.getTime();
+
+  return {
+    start,
+    end: new Date(start.getTime() + duration)
+  };
 }
 
 function parseDateTime(text: string, now: Date): ParsedDateTime | null {
@@ -238,7 +261,7 @@ function parseDateRange(text: string, now: Date): DateRange {
     return { start, end: addDays(start, 1) };
   }
 
-  if (text.includes("明天")) {
+  if (/明天|明早|明晚/.test(text)) {
     const start = addDays(now, 1);
     return { start, end: addDays(start, 1) };
   }
@@ -299,7 +322,7 @@ function parseMinuteToken(token?: string) {
 function normalizeClockTime(hours: number, minutes: number, periodText: string): ParsedClockTime {
   let normalizedHours = hours;
 
-  if (/下午|晚上|傍晚/.test(periodText) && normalizedHours < 12) {
+  if (/下午|晚上|傍晚|今晚|明晚/.test(periodText) && normalizedHours < 12) {
     normalizedHours += 12;
   }
 
@@ -326,7 +349,7 @@ function extractTitle(text: string) {
 
 function cleanupTitle(rawTitle: string) {
   const title = rawTitle
-    .replace(/今天|明天|后天|下周[一二三四五六日天]?|下周[一二三四五六日天]到(?:下)?周?[一二三四五六日天]|下周工作日/g, "")
+    .replace(/今天|今晚|今早|明天|明早|明晚|后天|下周[一二三四五六日天]?|下周[一二三四五六日天]到(?:下)?周?[一二三四五六日天]|下周工作日/g, "")
     .replace(/上午|早上|下午|晚上|中午|傍晚/g, "")
     .replace(/([0-9]{1,2}|[零一二两三四五六七八九十]{1,3})\s*[点时](半|[一二两三]刻|[0-9]{1,2}分?|[零一二三四五六七八九十]{1,3}分?)?/g, "")
     .replace(/到|-|至/g, "")
@@ -355,7 +378,11 @@ function findMatchingEvents(text: string, events: CalendarEvent[], now: Date) {
     (event) => text.includes(event.title) || event.title.includes(keyword) || keyword.includes(event.title)
   );
 
-  return titleMatched.length > 0 ? titleMatched : scoped;
+  if (titleMatched.length > 0) {
+    return titleMatched;
+  }
+
+  return isGenericEventKeyword(keyword) ? scoped : [];
 }
 
 function findFreeTimeSlots(text: string, events: CalendarEvent[], now: Date) {
@@ -393,7 +420,7 @@ function findFreeTimeSlots(text: string, events: CalendarEvent[], now: Date) {
 }
 
 function getFreeTimeWindow(text: string, date: Date) {
-  if (/上午|早上/.test(text)) {
+  if (/上午|早上|今早|明早/.test(text)) {
     return {
       start: set(date, { hours: 9, minutes: 0, seconds: 0, milliseconds: 0 }),
       end: set(date, { hours: 12, minutes: 0, seconds: 0, milliseconds: 0 })
@@ -407,7 +434,7 @@ function getFreeTimeWindow(text: string, date: Date) {
     };
   }
 
-  if (/晚上|傍晚/.test(text)) {
+  if (/晚上|傍晚|今晚|明晚/.test(text)) {
     return {
       start: set(date, { hours: 18, minutes: 0, seconds: 0, milliseconds: 0 }),
       end: set(date, { hours: 22, minutes: 0, seconds: 0, milliseconds: 0 })
@@ -424,14 +451,14 @@ function extractEventKeyword(text: string) {
   return cleanupTitle(
     text
       .replace(/删除|删掉|取消|把|将|改到|修改|推迟到|提前到/g, "")
-      .replace(/今天|明天|后天|下周[一二三四五六日天]?/g, "")
+      .replace(/今天|今晚|今早|明天|明早|明晚|后天|下周[一二三四五六日天]?/g, "")
   );
 }
 
 function filterEventsByText(text: string, events: CalendarEvent[], now: Date) {
   const range = parseDateRange(text, now);
 
-  if (/今天|明天|后天|下周|工作日/.test(text)) {
+  if (/今天|今晚|今早|明天|明早|明晚|后天|下周|工作日/.test(text)) {
     return events.filter((event) => {
       const eventStart = new Date(event.start);
       return eventStart >= startOfDay(range.start) && eventStart < startOfDay(range.end);
@@ -439,6 +466,10 @@ function filterEventsByText(text: string, events: CalendarEvent[], now: Date) {
   }
 
   return events;
+}
+
+function isGenericEventKeyword(keyword: string) {
+  return !keyword || /^(日程|安排|会议|会|这个|那个)$/.test(keyword);
 }
 
 function startOfDay(date: Date) {
@@ -480,8 +511,9 @@ function weekdayToNumber(token: string) {
 
 function getNextWeekday(now: Date, weekday: number) {
   const current = now.getDay();
-  const diff = (weekday - current + 7) % 7 || 7;
-  return addDays(now, diff);
+  const daysUntilNextMonday = (1 - current + 7) % 7 || 7;
+  const offsetFromMonday = weekday === 0 ? 6 : weekday - 1;
+  return addDays(now, daysUntilNextMonday + offsetFromMonday);
 }
 
 function isSameDate(first: Date, second: Date) {

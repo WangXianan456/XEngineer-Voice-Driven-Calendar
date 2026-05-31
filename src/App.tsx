@@ -17,6 +17,15 @@ import {
   Volume2
 } from "lucide-react";
 import { parseCalendarCommand } from "./agent/commandParser";
+import { validateParsedCommand } from "./agent/commandValidator";
+import {
+  isMemoryCorrection,
+  isReferenceCommand,
+  isTargetlessMemoryTimeCommand,
+  parseMemoryCandidateChoice,
+  resolveMemoryReference,
+  resolveMemoryTimeUpdate
+} from "./agent/agentMemory";
 import {
   agentReducer,
   createInitialAgentState,
@@ -24,6 +33,7 @@ import {
   createCreatePendingAction,
   createDeletePendingAction,
   createConfirmPendingActionResult,
+  createLocationPendingAction,
   createReminderPendingAction,
   createUpdatePendingAction,
   getSelectedPendingEvent,
@@ -42,6 +52,7 @@ import {
 import type { CalendarEvent, CreateCalendarEventInput } from "./calendar/eventTypes";
 import { useCalendarEvents } from "./calendar/useCalendarEvents";
 import { speak, warmUpSpeechSynthesis } from "./speech/synthesis";
+import { normalizeSpeechTranscript, type SpeechRecognitionMeta } from "./speech/speechCorrection";
 import { useLocalAsrRecognition } from "./speech/useLocalAsrRecognition";
 import { useSpeechRecognition } from "./speech/useSpeechRecognition";
 import { formatDateLabel, formatEventTime, formatReminder } from "./utils/dateFormat";
@@ -66,17 +77,11 @@ export function App() {
   const [speechProvider, setSpeechProvider] = useState<"browser" | "local">(defaultSpeechProvider);
   const [selectedDate, setSelectedDate] = useState(() => startOfDay(new Date()));
   const [visibleMonth, setVisibleMonth] = useState(() => startOfMonth(new Date()));
-  const browserSpeech = useSpeechRecognition((text) => {
-    setCommand(text);
-    handleCommand(text);
-  });
-  const localSpeech = useLocalAsrRecognition((text) => {
-    setCommand(text);
-    handleCommand(text);
-  });
+  const browserSpeech = useSpeechRecognition(handleRecognizedSpeech);
+  const localSpeech = useLocalAsrRecognition(handleRecognizedSpeech);
   const speech = speechProvider === "local" ? localSpeech : browserSpeech;
   const backendParserEnabled = isBackendParseEnabled();
-  const { messages, pendingAction, lastUndoAction, lastReferencedEvent } = agentState;
+  const { messages, pendingAction, lastUndoAction, memory } = agentState;
 
   const selectedDateEvents = events.filter((event) => isSameDate(new Date(event.start), selectedDate));
   const monthEvents = events.filter((event) => isSameMonth(new Date(event.start), visibleMonth));
@@ -102,6 +107,18 @@ export function App() {
     speak(text);
   }
 
+  function handleRecognizedSpeech(text: string, meta: SpeechRecognitionMeta) {
+    const normalized = normalizeSpeechTranscript(text, meta);
+    setCommand(normalized.text);
+
+    if (normalized.shouldConfirmBeforeSubmit) {
+      respond(createSpeechConfirmationMessage(normalized.text, normalized.confirmationReason));
+      return;
+    }
+
+    handleCommand(normalized.text);
+  }
+
   async function handleCommand(text = command) {
     const trimmed = text.trim();
 
@@ -112,9 +129,20 @@ export function App() {
 
     appendMessage("user", trimmed);
 
-    const candidateIndex = parseCandidateChoice(trimmed);
+    const candidateIndex = parseMemoryCandidateChoice(trimmed);
     if (pendingAction && candidateIndex !== null) {
       selectPendingCandidate(candidateIndex);
+      setCommand("");
+      return;
+    }
+
+    if (candidateIndex !== null && isMemoryCorrection(trimmed)) {
+      const selected = selectRememberedCandidate(candidateIndex);
+      if (selected) {
+        respond(`已改选第 ${candidateIndex + 1} 个：「${selected.title}」。`);
+      } else {
+        respond(`没有第 ${candidateIndex + 1} 个候选，请重新选择。`);
+      }
       setCommand("");
       return;
     }
@@ -138,12 +166,31 @@ export function App() {
       return;
     }
 
+    const referenceEvent = shouldUseMemoryReference(trimmed) ? resolveMemoryReference(memory, events) : null;
     const parsed = parseCalendarCommand(trimmed, events);
-    const referenceEvent = isReferenceCommand(trimmed) ? lastReferencedEvent : null;
+    const validation = validateParsedCommand(parsed, events);
 
-    if (parsed.intent === "create_event") {
-      const conflicts = findConflictingEvents(parsed.event.start, parsed.event.end, events);
-      const pendingCreate = createCreatePendingAction(parsed.event, conflicts, parsed.reply);
+    if (!validation.ok) {
+      if (validation.reason === "missing_update_time" && referenceEvent) {
+        const memoryTimeUpdate = resolveMemoryTimeUpdate(trimmed, referenceEvent);
+        if (memoryTimeUpdate) {
+          requestUpdateCandidates([referenceEvent], memoryTimeUpdate.start, memoryTimeUpdate.end);
+          setCommand("");
+          return;
+        }
+      }
+
+      respond(validation.message);
+      setCommand("");
+      return;
+    }
+
+    const validatedParsed = validation.command;
+    dispatchAgent({ type: "remember_intent", intent: validatedParsed.intent });
+
+    if (validatedParsed.intent === "create_event") {
+      const conflicts = findConflictingEvents(validatedParsed.event.start, validatedParsed.event.end, events);
+      const pendingCreate = createCreatePendingAction(validatedParsed.event, conflicts, validatedParsed.reply);
       dispatchAgent({
         type: "set_pending_action",
         pendingAction: pendingCreate
@@ -151,38 +198,40 @@ export function App() {
       respond(pendingCreate.summary);
     }
 
-    if (parsed.intent === "list_events") {
-      respond(formatListReply(parsed.events, parsed.reply));
-      if (parsed.events.length === 1) {
-        dispatchAgent({ type: "set_last_referenced_event", event: parsed.events[0] });
+    if (validatedParsed.intent === "list_events") {
+      respond(formatListReply(validatedParsed.events, validatedParsed.reply));
+      if (validatedParsed.events.length === 1) {
+        dispatchAgent({ type: "remember_mentioned_events", events: validatedParsed.events, intent: "list_events" });
+      } else if (validatedParsed.events.length > 1) {
+        dispatchAgent({ type: "remember_candidates", candidates: validatedParsed.events, intent: "list_events" });
       }
     }
 
-    if (parsed.intent === "find_free_time") {
-      respond(formatFreeTimeReply(parsed.slots, parsed.reply));
+    if (validatedParsed.intent === "find_free_time") {
+      respond(formatFreeTimeReply(validatedParsed.slots, validatedParsed.reply));
     }
 
-    if (parsed.intent === "delete_event") {
-      const candidates = referenceEvent ? [referenceEvent] : parsed.candidates;
+    if (validatedParsed.intent === "delete_event") {
+      const candidates = referenceEvent ? [referenceEvent] : validatedParsed.candidates;
 
       if (candidates.length === 0) {
-        respond(parsed.reply);
+        respond(validatedParsed.reply);
       } else {
         requestDeleteCandidates(candidates);
       }
     }
 
-    if (parsed.intent === "update_event") {
-      const candidates = referenceEvent ? [referenceEvent] : parsed.candidates;
+    if (validatedParsed.intent === "update_event") {
+      const candidates = referenceEvent ? [referenceEvent] : validatedParsed.candidates;
 
-      if (candidates.length === 0 || !parsed.start || !parsed.end) {
-        respond(parsed.reply);
+      if (candidates.length === 0 || !validatedParsed.start || !validatedParsed.end) {
+        respond(validatedParsed.reply);
       } else {
-        requestUpdateCandidates(candidates, parsed.start, parsed.end);
+        requestUpdateCandidates(candidates, validatedParsed.start, validatedParsed.end);
       }
     }
 
-    if (parsed.intent === "unknown" && referenceEvent && isReminderOnlyCommand(trimmed)) {
+    if (validatedParsed.intent === "unknown" && referenceEvent && isReminderOnlyCommand(trimmed)) {
       const reminderMinutes = parseReminderMinutesFromText(trimmed);
       if (reminderMinutes !== null) {
         requestReminderUpdate(referenceEvent, reminderMinutes);
@@ -191,7 +240,16 @@ export function App() {
       }
     }
 
-    if (parsed.intent === "unknown") {
+    if (validatedParsed.intent === "unknown" && referenceEvent && isLocationOnlyCommand(trimmed)) {
+      const location = parseLocationFromText(trimmed);
+      if (location) {
+        requestLocationUpdate(referenceEvent, location);
+        setCommand("");
+        return;
+      }
+    }
+
+    if (validatedParsed.intent === "unknown") {
       let handledByBackend = false;
 
       if (backendParserEnabled) {
@@ -204,7 +262,7 @@ export function App() {
       }
 
       if (!handledByBackend) {
-        respond(parsed.reply);
+        respond(validatedParsed.reply);
       }
     }
 
@@ -220,8 +278,28 @@ export function App() {
         return true;
       }
 
-      const conflicts = findConflictingEvents(eventInput.start, eventInput.end, events);
-      const pendingCreate = createCreatePendingAction(eventInput, conflicts, parsed.reply);
+      const validation = validateParsedCommand(
+        {
+          intent: "create_event",
+          event: eventInput,
+          reply: parsed.reply
+        },
+        events
+      );
+
+      if (!validation.ok) {
+        respond(validation.message);
+        return true;
+      }
+
+      const safeCommand = validation.command;
+      if (safeCommand.intent !== "create_event") {
+        respond(parsed.reply);
+        return true;
+      }
+
+      const conflicts = findConflictingEvents(safeCommand.event.start, safeCommand.event.end, events);
+      const pendingCreate = createCreatePendingAction(safeCommand.event, conflicts, safeCommand.reply);
 
       dispatchAgent({
         type: "set_pending_action",
@@ -233,6 +311,19 @@ export function App() {
 
     if (parsed.intent === "delete_event") {
       const candidates = findBackendTargetEvents(parsed, events);
+      const validation = validateParsedCommand(
+        {
+          intent: "delete_event",
+          candidates,
+          reply: parsed.reply
+        },
+        events
+      );
+
+      if (!validation.ok) {
+        respond(validation.message);
+        return true;
+      }
 
       if (candidates.length === 0) {
         respond(parsed.reply);
@@ -246,6 +337,21 @@ export function App() {
     if (parsed.intent === "update_event") {
       const candidates = findBackendTargetEvents(parsed, events);
       const range = parseBackendDateRange(parsed);
+      const validation = validateParsedCommand(
+        {
+          intent: "update_event",
+          candidates,
+          start: range?.start,
+          end: range?.end,
+          reply: parsed.reply
+        },
+        events
+      );
+
+      if (!validation.ok) {
+        respond(validation.message);
+        return true;
+      }
 
       if (candidates.length === 0 || !range) {
         respond(parsed.reply);
@@ -273,6 +379,7 @@ export function App() {
   function requestDeleteCandidates(candidates: CalendarEvent[]) {
     const pendingDelete = createDeletePendingAction(candidates);
 
+    dispatchAgent({ type: "remember_candidates", candidates, intent: "delete_event" });
     dispatchAgent({
       type: "set_pending_action",
       pendingAction: pendingDelete
@@ -295,6 +402,7 @@ export function App() {
         : `找到 ${candidates.length} 个匹配日程，请先选择要修改的候选。`;
     const pendingUpdate = createUpdatePendingAction(candidates, start, end, summary);
 
+    dispatchAgent({ type: "remember_candidates", candidates, intent: "update_event" });
     dispatchAgent({
       type: "set_pending_action",
       pendingAction: pendingUpdate
@@ -313,6 +421,16 @@ export function App() {
     respond(`我会把「${event.title}」的提醒改为 ${formatReminder(reminderMinutes)}，请确认。`);
   }
 
+  function requestLocationUpdate(event: CalendarEvent, location: string) {
+    const pendingLocation = createLocationPendingAction(event, location);
+    dispatchAgent({
+      type: "set_pending_action",
+      pendingAction: pendingLocation
+    });
+    dispatchAgent({ type: "set_last_referenced_event", event });
+    respond(`我会把「${event.title}」的地点改为 ${location}，请确认。`);
+  }
+
   function selectPendingCandidate(index: number) {
     if (!pendingAction || pendingAction.type === "create_event") {
       respond("当前没有需要选择的候选。");
@@ -326,6 +444,7 @@ export function App() {
 
     const event = pendingAction.candidates[index];
     const summary = createCandidateSelectionSummary(pendingAction, event, formatEventTime, formatReminder);
+    dispatchAgent({ type: "select_memory_candidate", index });
     dispatchAgent({
       type: "select_candidate",
       index,
@@ -333,6 +452,16 @@ export function App() {
       summary
     });
     respond(`已选择第 ${index + 1} 个：「${event.title}」。请确认或取消。`);
+  }
+
+  function selectRememberedCandidate(index: number) {
+    const event = memory.lastCandidates[index] ?? null;
+    if (!event) {
+      return null;
+    }
+
+    dispatchAgent({ type: "select_memory_candidate", index });
+    return event;
   }
 
   function confirmPendingAction() {
@@ -801,6 +930,8 @@ function getPendingFields(pendingAction: PendingAction | null) {
       value:
         pendingAction.start && pendingAction.end
           ? formatEventTime(pendingAction.start.toISOString(), pendingAction.end.toISOString())
+          : pendingAction.location !== undefined
+            ? pendingAction.location
           : formatReminder(pendingAction.reminderMinutes ?? 10)
     },
     { label: "时长", value: duration === null ? "不变" : `${duration} 分钟` }
@@ -827,27 +958,36 @@ function getMicButtonLabel(isSupported: boolean, status: string) {
   return "点击开始录音";
 }
 
-function parseCandidateChoice(text: string) {
-  const digitMatch = text.match(/第?\s*([1-9])\s*(个|项|条)?/);
-  if (digitMatch) {
-    return Number(digitMatch[1]) - 1;
+function createSpeechConfirmationMessage(text: string, reason: string | null) {
+  if (reason === "empty") {
+    return "这次没有识别到有效语音，请重新录音或直接输入文字。";
   }
 
-  const chineseMatch = text.match(/第?\s*([一二两三四五六七八九])\s*(个|项|条)?/);
-  if (!chineseMatch) {
-    return null;
+  if (reason === "low_confidence") {
+    return `本地识别置信度较低，已先填入输入框：${text || "空结果"}。请检查后点击发送。`;
   }
 
-  const value = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 }[chineseMatch[1]];
-  return value ? value - 1 : null;
-}
+  if (reason === "corrected_local_asr") {
+    return `本地识别已做热词纠错，结果先放入输入框：${text}。请检查后点击发送。`;
+  }
 
-function isReferenceCommand(text: string) {
-  return /它|这个|那个|刚才|刚刚|上一个|前一个/.test(text);
+  if (reason === "missing_command_clue") {
+    return `这句话不像明确的日历指令，已先放入输入框：${text}。请检查后点击发送。`;
+  }
+
+  return `已识别为：${text}。请检查后点击发送。`;
 }
 
 function isReminderOnlyCommand(text: string) {
   return /提醒/.test(text) && !/添加|创建|安排|开.+会/.test(text);
+}
+
+function isLocationOnlyCommand(text: string) {
+  return /地点|地址|位置/.test(text) && /改成|改到|修改/.test(text);
+}
+
+function shouldUseMemoryReference(text: string) {
+  return isReferenceCommand(text) || isReminderOnlyCommand(text) || isLocationOnlyCommand(text) || isTargetlessMemoryTimeCommand(text);
 }
 
 function parseReminderMinutesFromText(text: string) {
@@ -858,6 +998,11 @@ function parseReminderMinutesFromText(text: string) {
 
   const value = parseChineseNumber(match[1]);
   return match[2] === "小时" ? value * 60 : value;
+}
+
+function parseLocationFromText(text: string) {
+  const match = text.match(/(?:地点|地址|位置).*(?:改成|改到|修改为|改为)\s*([^，。,.]+)/);
+  return match?.[1]?.trim() || null;
 }
 
 function parseChineseNumber(token: string) {

@@ -6,6 +6,7 @@ import {
   createCreatePendingAction,
   createDeletePendingAction,
   createInitialAgentState,
+  createLocationPendingAction,
   createReminderPendingAction,
   createUpdatePendingAction,
   getSelectedPendingEvent
@@ -101,6 +102,7 @@ describe("agentStateMachine", () => {
       new Date("2026-06-01T13:00:00+08:00")
     );
     const reminderPending = createReminderPendingAction(baseEvent, 15, "提前 15 分钟");
+    const locationPending = createLocationPendingAction(baseEvent, "A 楼");
 
     expect(createPending.summary).toContain("冲突");
     expect(deletePending.selectedIndex).toBeNull();
@@ -109,6 +111,8 @@ describe("agentStateMachine", () => {
     expect(updatePending.start?.getHours()).toBe(12);
     expect(reminderPending.reminderMinutes).toBe(15);
     expect(reminderPending.summary).toContain("提前 15 分钟");
+    expect(locationPending.location).toBe("A 楼");
+    expect(locationPending.summary).toContain("A 楼");
   });
 
   it("creates confirm results without calendar side effects", () => {
@@ -128,5 +132,44 @@ describe("agentStateMachine", () => {
     expect(result.event.id).toBe(baseEvent.id);
     expect(result.updates.start).toBe("2026-06-01T04:00:00.000Z");
     expect(result.updates.end).toBe("2026-06-01T05:00:00.000Z");
+  });
+
+  it("creates location update confirm results", () => {
+    const locationPending = createLocationPendingAction(baseEvent, "A 楼");
+    const result = createConfirmPendingActionResult(locationPending);
+
+    expect(result.type).toBe("update_event");
+
+    if (result.type !== "update_event") {
+      throw new Error("expected update_event");
+    }
+
+    expect(result.updates.location).toBe("A 楼");
+  });
+
+  it("stores mentioned events in memory", () => {
+    const state = agentReducer(createInitialAgentState(), {
+      type: "remember_mentioned_events",
+      events: [baseEvent],
+      intent: "list_events"
+    });
+
+    expect(state.memory.lastIntent).toBe("list_events");
+    expect(state.memory.selectedEventId).toBe(baseEvent.id);
+    expect(state.lastReferencedEvent?.id).toBe(baseEvent.id);
+  });
+
+  it("stores candidate lists in memory and selects from them", () => {
+    const second = { ...baseEvent, id: "other", title: "设计评审会" };
+    const state = agentReducer(createInitialAgentState(), {
+      type: "remember_candidates",
+      candidates: [baseEvent, second],
+      intent: "delete_event"
+    });
+    const selected = agentReducer(state, { type: "select_memory_candidate", index: 1 });
+
+    expect(state.memory.pendingClarification).toBe("candidate_selection");
+    expect(selected.memory.selectedEventId).toBe("other");
+    expect(selected.lastReferencedEvent?.title).toBe("设计评审会");
   });
 });

@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from "react";
+import type { SpeechRecognitionMeta } from "./speechCorrection";
 
 type SpeechRecognitionStatus = "unsupported" | "idle" | "listening" | "error";
 
@@ -18,6 +19,7 @@ type SpeechRecognitionEventLike = {
   results: ArrayLike<{
     0: {
       transcript: string;
+      confidence?: number;
     };
   }>;
 };
@@ -31,7 +33,7 @@ declare global {
   }
 }
 
-export function useSpeechRecognition(onResult: (text: string) => void) {
+export function useSpeechRecognition(onResult: (text: string, meta: SpeechRecognitionMeta) => void) {
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
   const [status, setStatus] = useState<SpeechRecognitionStatus>(() => getRecognitionConstructor() ? "idle" : "unsupported");
 
@@ -67,9 +69,10 @@ export function useSpeechRecognition(onResult: (text: string) => void) {
     recognition.interimResults = false;
 
     recognition.onresult = (event) => {
-      const result = event.results[0]?.[0]?.transcript?.trim();
-      if (result) {
-        onResult(result);
+      const result = event.results[0]?.[0];
+      const transcript = result?.transcript?.trim();
+      if (transcript) {
+        onResult(transcript, { source: "browser", confidence: result.confidence });
       }
     };
 
