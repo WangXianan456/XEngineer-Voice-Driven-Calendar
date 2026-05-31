@@ -58,6 +58,30 @@ export function useCalendarEvents() {
     );
   }
 
+  function importEvents(inputs: CreateCalendarEventInput[]) {
+    const importedEvents = inputs.map(createCalendarEvent);
+    let added = 0;
+    let skipped = 0;
+
+    setEvents((current) => {
+      const merged = [...current];
+
+      for (const event of importedEvents) {
+        if (hasDuplicateEvent(merged, event)) {
+          skipped += 1;
+          continue;
+        }
+
+        merged.push(event);
+        added += 1;
+      }
+
+      return merged;
+    });
+
+    return { added, skipped };
+  }
+
   function resetDemoEvents() {
     setEvents(createDemoEvents());
   }
@@ -72,7 +96,20 @@ export function useCalendarEvents() {
     restoreEvent,
     deleteEvent,
     updateEvent,
+    importEvents,
     resetDemoEvents,
     clearEvents
   };
+}
+
+function hasDuplicateEvent(events: CalendarEvent[], event: CalendarEvent) {
+  if (event.externalSource && event.externalEventId) {
+    return events.some(
+      (item) => item.externalSource === event.externalSource && item.externalEventId === event.externalEventId
+    );
+  }
+
+  return events.some(
+    (item) => item.title === event.title && item.start === event.start && item.end === event.end
+  );
 }

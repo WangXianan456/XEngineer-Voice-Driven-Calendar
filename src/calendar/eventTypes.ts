@@ -1,4 +1,5 @@
 export type CalendarEventType = "meeting" | "focus" | "personal";
+export type CalendarEventSource = "local" | "ics";
 
 export type CalendarEvent = {
   id: string;
@@ -9,6 +10,8 @@ export type CalendarEvent = {
   location?: string;
   notes?: string;
   sourceText: string;
+  externalSource?: CalendarEventSource;
+  externalEventId?: string;
   type: CalendarEventType;
   createdAt: string;
   updatedAt: string;
@@ -22,5 +25,7 @@ export type CreateCalendarEventInput = {
   location?: string;
   notes?: string;
   sourceText: string;
+  externalSource?: CalendarEventSource;
+  externalEventId?: string;
   type?: CalendarEventType;
 };

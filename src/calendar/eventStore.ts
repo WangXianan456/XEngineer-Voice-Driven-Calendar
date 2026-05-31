@@ -23,6 +23,8 @@ export function createCalendarEvent(input: CreateCalendarEventInput): CalendarEv
     location: input.location,
     notes: input.notes,
     sourceText: input.sourceText,
+    externalSource: input.externalSource,
+    externalEventId: input.externalEventId,
     type: input.type ?? "meeting",
     createdAt: now,
     updatedAt: now

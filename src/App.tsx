@@ -1,4 +1,4 @@
-import { useMemo, useReducer, useState } from "react";
+import { useMemo, useReducer, useRef, useState } from "react";
 import { addDays, addMonths, differenceInMinutes, endOfMonth, endOfWeek, format, startOfMonth, startOfWeek, subMonths } from "date-fns";
 import {
   Bell,
@@ -7,6 +7,7 @@ import {
   Clock3,
   Database,
   Download,
+  FileUp,
   ChevronLeft,
   ChevronRight,
   Mic,
@@ -50,6 +51,7 @@ import {
   type BackendParsedCommand
 } from "./agent/backendParser";
 import type { CalendarEvent, CreateCalendarEventInput } from "./calendar/eventTypes";
+import { exportCalendarEventsToIcs, parseIcsCalendar } from "./calendar/ics";
 import { useCalendarEvents } from "./calendar/useCalendarEvents";
 import { speak, warmUpSpeechSynthesis } from "./speech/synthesis";
 import { normalizeSpeechTranscript, type SpeechRecognitionMeta } from "./speech/speechCorrection";
@@ -70,13 +72,14 @@ const env = (import.meta as ImportMeta & { env?: Record<string, string | undefin
 const defaultSpeechProvider = env?.VITE_SPEECH_PROVIDER === "local" ? "local" : "browser";
 
 export function App() {
-  const { events, addEvent, restoreEvent, deleteEvent, updateEvent, resetDemoEvents, clearEvents } =
+  const { events, addEvent, restoreEvent, deleteEvent, updateEvent, importEvents, resetDemoEvents, clearEvents } =
     useCalendarEvents();
   const [command, setCommand] = useState("");
   const [agentState, dispatchAgent] = useReducer(agentReducer, undefined, createInitialAgentState);
   const [speechProvider, setSpeechProvider] = useState<"browser" | "local">(defaultSpeechProvider);
   const [selectedDate, setSelectedDate] = useState(() => startOfDay(new Date()));
   const [visibleMonth, setVisibleMonth] = useState(() => startOfMonth(new Date()));
+  const icsFileInputRef = useRef<HTMLInputElement | null>(null);
   const browserSpeech = useSpeechRecognition(handleRecognizedSpeech);
   const localSpeech = useLocalAsrRecognition(handleRecognizedSpeech);
   const speech = speechProvider === "local" ? localSpeech : browserSpeech;
@@ -550,8 +553,50 @@ export function App() {
     URL.revokeObjectURL(url);
   }
 
+  function exportIcsEvents() {
+    const blob = new Blob([exportCalendarEventsToIcs(events)], { type: "text/calendar;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "voice-calendar-events.ics";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function importIcsFile(file: File | null) {
+    if (!file) {
+      return;
+    }
+
+    try {
+      const content = await file.text();
+      const parsedEvents = parseIcsCalendar(content);
+
+      if (parsedEvents.length === 0) {
+        respond("没有从 ICS 文件中读取到可导入的日程。");
+        return;
+      }
+
+      const result = importEvents(parsedEvents);
+      respond(`已从 ICS 导入 ${result.added} 个日程，跳过 ${result.skipped} 个重复日程。`);
+    } catch {
+      respond("ICS 文件解析失败，请确认文件格式是否正确。");
+    } finally {
+      if (icsFileInputRef.current) {
+        icsFileInputRef.current.value = "";
+      }
+    }
+  }
+
   return (
     <main className="app-shell">
+      <input
+        ref={icsFileInputRef}
+        type="file"
+        accept=".ics,text/calendar"
+        hidden
+        onChange={(event) => void importIcsFile(event.target.files?.[0] ?? null)}
+      />
       <header className="topbar">
         <div>
           <p className="eyebrow">Voice Calendar Agent</p>
@@ -717,6 +762,12 @@ export function App() {
                     <button className="secondary-button" type="button" onClick={exportEvents}>
                       导出 JSON
                     </button>
+                    <button className="secondary-button" type="button" onClick={exportIcsEvents}>
+                      导出 ICS
+                    </button>
+                    <button className="secondary-button" type="button" onClick={() => icsFileInputRef.current?.click()}>
+                      导入 ICS
+                    </button>
                   </>
                 )}
               </div>
@@ -733,6 +784,14 @@ export function App() {
             <button className="secondary-button" type="button" onClick={exportEvents}>
               <Download size={17} />
               导出 JSON
+            </button>
+            <button className="secondary-button" type="button" onClick={exportIcsEvents}>
+              <Download size={17} />
+              导出 ICS
+            </button>
+            <button className="secondary-button" type="button" onClick={() => icsFileInputRef.current?.click()}>
+              <FileUp size={17} />
+              导入 ICS
             </button>
           </div>
 
