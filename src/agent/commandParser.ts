@@ -44,6 +44,16 @@ type ParsedDateTime = {
   end: Date;
 };
 
+type DateRange = {
+  start: Date;
+  end: Date;
+};
+
+type ParsedClockTime = {
+  hours: number;
+  minutes: number;
+};
+
 const chineseDigits: Record<string, number> = {
   零: 0,
   一: 1,
@@ -163,7 +173,7 @@ export function parseCalendarCommand(
 }
 
 function isCreateIntent(text: string) {
-  return /添加|创建|安排|开.+会|提醒我/.test(text);
+  return /添加|创建|安排|约.+会|帮我约|开.+会|提醒我/.test(text);
 }
 
 function isListIntent(text: string) {
@@ -184,7 +194,8 @@ function isFreeTimeIntent(text: string) {
 
 function parseDateTime(text: string, now: Date): ParsedDateTime | null {
   const date = parseDate(text, now);
-  const time = parseTime(text);
+  const timeRange = parseTimeRange(text);
+  const time = timeRange?.start ?? parseTime(text);
 
   if (!time) {
     return null;
@@ -199,51 +210,104 @@ function parseDateTime(text: string, now: Date): ParsedDateTime | null {
 
   return {
     start,
-    end: addHours(start, 1)
+    end: timeRange?.end
+      ? set(date, { hours: timeRange.end.hours, minutes: timeRange.end.minutes, seconds: 0, milliseconds: 0 })
+      : addHours(start, 1)
   };
 }
 
 function parseDate(text: string, now: Date) {
+  return parseDateRange(text, now).start;
+}
+
+function parseDateRange(text: string, now: Date): DateRange {
+  const nextWeekRange = text.match(/下周([一二三四五六日天])到(?:下)?周?([一二三四五六日天])/);
+  if (nextWeekRange) {
+    const start = getNextWeekday(now, weekdayToNumber(nextWeekRange[1]));
+    const end = addDays(getNextWeekday(now, weekdayToNumber(nextWeekRange[2])), 1);
+    return start <= end ? { start, end } : { start, end: addDays(end, 7) };
+  }
+
+  if (/下周工作日/.test(text)) {
+    const start = getNextWeekday(now, 1);
+    return { start, end: addDays(start, 5) };
+  }
+
   if (text.includes("后天")) {
-    return addDays(now, 2);
+    const start = addDays(now, 2);
+    return { start, end: addDays(start, 1) };
   }
 
   if (text.includes("明天")) {
-    return addDays(now, 1);
+    const start = addDays(now, 1);
+    return { start, end: addDays(start, 1) };
   }
 
   const nextWeekday = text.match(/下周([一二三四五六日天])/);
   if (nextWeekday) {
-    return getNextWeekday(now, weekdayToNumber(nextWeekday[1]));
+    const start = getNextWeekday(now, weekdayToNumber(nextWeekday[1]));
+    return { start, end: addDays(start, 1) };
   }
 
-  return now;
+  return { start: now, end: addDays(now, 1) };
 }
 
-function parseTime(text: string) {
-  const match = text.match(/([0-9]{1,2}|[零一二两三四五六七八九十]{1,3})\s*[点时](半|[0-9]{1,2}分?|[零一二三四五六七八九十]{1,3}分?)?/);
+function parseTimeRange(text: string): { start: ParsedClockTime; end: ParsedClockTime } | null {
+  const match = text.match(
+    /([上下中]午|早上|晚上|傍晚)?\s*([0-9]{1,2}|[零一二两三四五六七八九十]{1,3})\s*[点时]([半一二两三四五六七八九十]{0,3}刻?|[0-9]{1,2}分?)?\s*(?:到|-|至)\s*([上下中]午|早上|晚上|傍晚)?\s*([0-9]{1,2}|[零一二两三四五六七八九十]{1,3})\s*[点时]([半一二两三四五六七八九十]{0,3}刻?|[0-9]{1,2}分?)?/
+  );
 
   if (!match) {
     return null;
   }
 
-  let hours = parseNumber(match[1]);
-  let minutes = 0;
-  const minuteToken = match[2];
+  const startPeriod = match[1] ?? "";
+  const endPeriod = match[4] ?? startPeriod;
+  return {
+    start: normalizeClockTime(parseNumber(match[2]), parseMinuteToken(match[3]), startPeriod),
+    end: normalizeClockTime(parseNumber(match[5]), parseMinuteToken(match[6]), endPeriod)
+  };
+}
 
-  if (minuteToken) {
-    minutes = minuteToken === "半" ? 30 : parseNumber(minuteToken.replace("分", ""));
+function parseTime(text: string) {
+  const match = text.match(/([0-9]{1,2}|[零一二两三四五六七八九十]{1,3})\s*[点时](半|[一二两三]刻|[0-9]{1,2}分?|[零一二三四五六七八九十]{1,3}分?)?/);
+
+  if (!match) {
+    return null;
   }
 
-  if (/下午|晚上|傍晚/.test(text) && hours < 12) {
-    hours += 12;
+  return normalizeClockTime(parseNumber(match[1]), parseMinuteToken(match[2]), text);
+}
+
+function parseMinuteToken(token?: string) {
+  if (!token) {
+    return 0;
   }
 
-  if (/中午/.test(text) && hours < 11) {
-    hours += 12;
+  if (token === "半") {
+    return 30;
   }
 
-  return { hours, minutes };
+  if (token.includes("刻")) {
+    const quarterToken = token.replace("刻", "") || "一";
+    return parseNumber(quarterToken) * 15;
+  }
+
+  return parseNumber(token.replace("分", ""));
+}
+
+function normalizeClockTime(hours: number, minutes: number, periodText: string): ParsedClockTime {
+  let normalizedHours = hours;
+
+  if (/下午|晚上|傍晚/.test(periodText) && normalizedHours < 12) {
+    normalizedHours += 12;
+  }
+
+  if (/中午/.test(periodText) && normalizedHours < 11) {
+    normalizedHours += 12;
+  }
+
+  return { hours: normalizedHours, minutes };
 }
 
 function extractTitle(text: string) {
@@ -262,11 +326,12 @@ function extractTitle(text: string) {
 
 function cleanupTitle(rawTitle: string) {
   const title = rawTitle
-    .replace(/今天|明天|后天|下周[一二三四五六日天]?/g, "")
+    .replace(/今天|明天|后天|下周[一二三四五六日天]?|下周[一二三四五六日天]到(?:下)?周?[一二三四五六日天]|下周工作日/g, "")
     .replace(/上午|早上|下午|晚上|中午|傍晚/g, "")
-    .replace(/([0-9]{1,2}|[零一二两三四五六七八九十]{1,3})\s*[点时](半|[0-9]{1,2}分?|[零一二三四五六七八九十]{1,3}分?)?/g, "")
+    .replace(/([0-9]{1,2}|[零一二两三四五六七八九十]{1,3})\s*[点时](半|[一二两三]刻|[0-9]{1,2}分?|[零一二三四五六七八九十]{1,3}分?)?/g, "")
+    .replace(/到|-|至/g, "")
     .replace(/提前([0-9]{1,3}|[零一二两三四五六七八九十]{1,3})(分钟|小时)提醒?/g, "")
-    .replace(/提醒我|和|一个|一场/g, "")
+    .replace(/提醒我|帮我|约个会|和|一个|一场/g, "")
     .trim();
 
   return title || "新日程";
@@ -364,15 +429,20 @@ function extractEventKeyword(text: string) {
 }
 
 function filterEventsByText(text: string, events: CalendarEvent[], now: Date) {
-  if (text.includes("今天")) {
-    return events.filter((event) => isSameDate(new Date(event.start), now));
-  }
+  const range = parseDateRange(text, now);
 
-  if (text.includes("明天")) {
-    return events.filter((event) => isSameDate(new Date(event.start), addDays(now, 1)));
+  if (/今天|明天|后天|下周|工作日/.test(text)) {
+    return events.filter((event) => {
+      const eventStart = new Date(event.start);
+      return eventStart >= startOfDay(range.start) && eventStart < startOfDay(range.end);
+    });
   }
 
   return events;
+}
+
+function startOfDay(date: Date) {
+  return set(date, { hours: 0, minutes: 0, seconds: 0, milliseconds: 0 });
 }
 
 function parseNumber(token: string) {
