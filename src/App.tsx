@@ -737,6 +737,7 @@ export function App() {
                     >
                       <strong>{index + 1}. {candidate.title}</strong>
                       <span>{formatEventTime(candidate.start, candidate.end)}</span>
+                      <span className={getEventSourceClassName(candidate)}>{formatEventSource(candidate)}</span>
                     </button>
                   ))}
                 </div>
@@ -896,7 +897,10 @@ export function App() {
               selectedDateEvents.map((event) => (
                 <article className={`event-item ${event.type}`} key={event.id}>
                   <div>
-                    <p>{formatDateLabel(new Date(event.start))}</p>
+                    <p>
+                      {formatDateLabel(new Date(event.start))}
+                      <span className={getEventSourceClassName(event)}>{formatEventSource(event)}</span>
+                    </p>
                     <h3>{event.title}</h3>
                     <span>{formatEventTime(event.start, event.end)}</span>
                   </div>
@@ -972,6 +976,7 @@ function getPendingFields(pendingAction: PendingAction | null) {
       { label: "候选", value: `${pendingAction.candidates.length} 个` },
       { label: "标题", value: event?.title ?? "待选择" },
       { label: "时间", value: event ? formatEventTime(event.start, event.end) : "待选择" },
+      { label: "来源", value: event ? formatEventSource(event) : "待选择" },
       { label: "风险", value: "需要二次确认" }
     ];
   }
@@ -1170,4 +1175,16 @@ function formatFreeTimeReply(slots: { start: Date; end: Date }[], fallback: stri
         `${index + 1}. ${formatEventTime(slot.start.toISOString(), slot.end.toISOString()).replace("今天 ", "")}`
     )
     .join("\n");
+}
+
+function formatEventSource(event: CalendarEvent) {
+  if (event.externalSource === "ics") {
+    return "ICS";
+  }
+
+  return "本地";
+}
+
+function getEventSourceClassName(event: CalendarEvent) {
+  return event.externalSource === "ics" ? "source-badge external" : "source-badge";
 }

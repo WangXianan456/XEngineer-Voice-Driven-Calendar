@@ -448,6 +448,26 @@ dd {
   font-weight: 700;
 }
 
+.source-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: #566273;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+  padding: 4px 7px;
+}
+
+.source-badge.external {
+  border-color: #bfd1f2;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
 .primary-button,
 .secondary-button {
   display: inline-flex;
@@ -677,6 +697,10 @@ dd {
 }
 
 .event-item p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
   margin-bottom: 4px;
   color: var(--muted);
   font-size: 13px;
