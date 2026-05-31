@@ -1,5 +1,12 @@
 import type { CalendarEvent, CreateCalendarEventInput } from "./eventTypes";
 
+export type IcsParseResult = {
+  events: CreateCalendarEventInput[];
+  totalVevents: number;
+  invalidVevents: number;
+  hasCalendarEnvelope: boolean;
+};
+
 export function exportCalendarEventsToIcs(events: CalendarEvent[], calendarName = "XEngineer Voice Calendar") {
   const lines = [
     "BEGIN:VCALENDAR",
@@ -19,12 +26,20 @@ export function exportCalendarEventsToIcs(events: CalendarEvent[], calendarName 
 }
 
 export function parseIcsCalendar(content: string): CreateCalendarEventInput[] {
+  return parseIcsCalendarWithReport(content).events;
+}
+
+export function parseIcsCalendarWithReport(content: string): IcsParseResult {
   const lines = unfoldIcsLines(content);
   const events: CreateCalendarEventInput[] = [];
+  let totalVevents = 0;
+  let invalidVevents = 0;
   let current: string[] | null = null;
+  const hasCalendarEnvelope = lines.includes("BEGIN:VCALENDAR") && lines.includes("END:VCALENDAR");
 
   for (const line of lines) {
     if (line === "BEGIN:VEVENT") {
+      totalVevents += 1;
       current = [];
       continue;
     }
@@ -34,6 +49,8 @@ export function parseIcsCalendar(content: string): CreateCalendarEventInput[] {
         const event = parseVevent(current);
         if (event) {
           events.push(event);
+        } else {
+          invalidVevents += 1;
         }
       }
       current = null;
@@ -45,7 +62,12 @@ export function parseIcsCalendar(content: string): CreateCalendarEventInput[] {
     }
   }
 
-  return events;
+  return {
+    events,
+    totalVevents,
+    invalidVevents,
+    hasCalendarEnvelope
+  };
 }
 
 function createVeventLines(event: CalendarEvent) {

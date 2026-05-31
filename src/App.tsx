@@ -51,7 +51,7 @@ import {
   type BackendParsedCommand
 } from "./agent/backendParser";
 import type { CalendarEvent, CreateCalendarEventInput } from "./calendar/eventTypes";
-import { exportCalendarEventsToIcs, parseIcsCalendar } from "./calendar/ics";
+import { exportCalendarEventsToIcs, parseIcsCalendarWithReport } from "./calendar/ics";
 import { useCalendarEvents } from "./calendar/useCalendarEvents";
 import { speak, warmUpSpeechSynthesis } from "./speech/synthesis";
 import { normalizeSpeechTranscript, type SpeechRecognitionMeta } from "./speech/speechCorrection";
@@ -570,15 +570,25 @@ export function App() {
 
     try {
       const content = await file.text();
-      const parsedEvents = parseIcsCalendar(content);
+      const parseResult = parseIcsCalendarWithReport(content);
+      const parsedEvents = parseResult.events;
+
+      if (!parseResult.hasCalendarEnvelope) {
+        respond("这不是完整的 ICS 日历文件，请确认包含 BEGIN:VCALENDAR 和 END:VCALENDAR。");
+        return;
+      }
 
       if (parsedEvents.length === 0) {
-        respond("没有从 ICS 文件中读取到可导入的日程。");
+        respond(
+          parseResult.totalVevents > 0
+            ? `ICS 中有 ${parseResult.totalVevents} 个事件，但时间或格式无效，未导入。`
+            : "没有从 ICS 文件中读取到可导入的日程。"
+        );
         return;
       }
 
       const result = importEvents(parsedEvents);
-      respond(`已从 ICS 导入 ${result.added} 个日程，跳过 ${result.skipped} 个重复日程。`);
+      respond(createIcsImportSummary(result.added, result.skipped, parseResult.invalidVevents));
     } catch {
       respond("ICS 文件解析失败，请确认文件格式是否正确。");
     } finally {
@@ -1040,6 +1050,20 @@ function createSpeechConfirmationMessage(text: string, reason: string | null) {
   }
 
   return `已识别为：${text}。请检查后点击发送。`;
+}
+
+function createIcsImportSummary(added: number, skipped: number, invalid: number) {
+  const parts = [`已从 ICS 导入 ${added} 个日程`];
+
+  if (skipped > 0) {
+    parts.push(`跳过 ${skipped} 个重复日程`);
+  }
+
+  if (invalid > 0) {
+    parts.push(`忽略 ${invalid} 个无效事件`);
+  }
+
+  return `${parts.join("，")}。`;
 }
 
 function isReminderOnlyCommand(text: string) {

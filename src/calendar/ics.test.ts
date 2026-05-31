@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createCalendarEvent } from "./eventStore";
-import { exportCalendarEventsToIcs, parseIcsCalendar } from "./ics";
+import { exportCalendarEventsToIcs, parseIcsCalendar, parseIcsCalendarWithReport } from "./ics";
 
 describe("ICS calendar exchange", () => {
   it("exports local events to a valid ICS calendar", () => {
@@ -66,5 +66,27 @@ describe("ICS calendar exchange", () => {
     expect(imported[0].title).toBe("设计,评审;会");
     expect(imported[0].notes).toBe("第一行\n第二行");
     expect(imported[0].start.toISOString()).toBe(event.start);
+  });
+
+  it("reports invalid events and malformed calendar envelopes", () => {
+    const report = parseIcsCalendarWithReport(
+      [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "BEGIN:VEVENT",
+        "UID:bad-event",
+        "SUMMARY:缺少时间",
+        "END:VEVENT",
+        "END:VCALENDAR"
+      ].join("\r\n")
+    );
+
+    expect(report.hasCalendarEnvelope).toBe(true);
+    expect(report.totalVevents).toBe(1);
+    expect(report.invalidVevents).toBe(1);
+    expect(report.events).toHaveLength(0);
+
+    const malformed = parseIcsCalendarWithReport("BEGIN:VEVENT\r\nSUMMARY:孤立事件\r\nEND:VEVENT");
+    expect(malformed.hasCalendarEnvelope).toBe(false);
   });
 });
